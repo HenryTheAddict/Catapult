@@ -1,0 +1,153 @@
+name: build
+
+# Build Catapult on every push / PR to main, plus on demand. We do an
+# unsigned Release build (Actions runners don't have your Developer ID
+# certs) and stash the resulting .app + DMG as an artifact you can download
+# from the run page. On a tag like v1.0.0 we additionally publish a draft
+# GitHub Release with the DMG attached.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.config }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+
+    env:
+      SCHEME: Catapult
+      PROJECT: Catapult.xcodeproj
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: select Xcode
+        # Pin to the newest Xcode on the macos-15 image. macOS 26 SDK lives
+        # in Xcode 16.x; bump this if the runner image rolls forward.
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: print toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          sw_vers
+
+      - name: list schemes (sanity check)
+        run: xcodebuild -project "$PROJECT" -list
+
+      - name: build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration ${{ matrix.config }} \
+            -derivedDataPath build/derived \
+            CONFIGURATION_BUILD_DIR="$PWD/build/${{ matrix.config }}" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            build | xcbeautify --renderer github-actions || \
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration ${{ matrix.config }} \
+            -derivedDataPath build/derived \
+            CONFIGURATION_BUILD_DIR="$PWD/build/${{ matrix.config }}" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: verify .app exists
+        run: |
+          ls -la "build/${{ matrix.config }}/Catapult.app/Contents/" || \
+            (echo "::error::Catapult.app missing after build" && exit 1)
+
+      - name: package DMG (Release only)
+        if: matrix.config == 'Release'
+        run: |
+          set -euo pipefail
+          STAGE="build/dmg-staging"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp -R "build/Release/Catapult.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            "build/Release/Catapult.app/Contents/Info.plist")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          hdiutil create \
+            -volname "Catapult" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO -fs HFS+ \
+            "build/Catapult-${VERSION}.dmg"
+
+      - name: upload .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Catapult-${{ matrix.config }}-app
+          path: build/${{ matrix.config }}/Catapult.app
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: upload DMG
+        if: matrix.config == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Catapult-Release-dmg
+          path: build/Catapult-*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  check:
+    name: static checks
+    runs-on: macos-15
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: scan for hardcoded secrets / personal info
+        # Belt-and-suspenders: fail CI if anyone ever commits an API key,
+        # a personal email, or hardcoded credentials into a Swift / plist /
+        # entitlements file. The pattern list mirrors the manual audit we
+        # ran before shipping 1.0.
+        run: |
+          set -e
+          PATTERNS='sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._-]{20,}|-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----'
+          if grep -rEn "$PATTERNS" \
+              --include='*.swift' --include='*.plist' \
+              --include='*.entitlements' --include='*.xcconfig' \
+              --include='*.json' --include='*.yml' --include='*.yaml' \
+              Catapult/ Catapult.xcodeproj/ 2>/dev/null; then
+            echo "::error::Possible secret committed — review the matches above."
+            exit 1
+          fi
+          echo "No hardcoded secrets found."
+
+      - name: verify .gitignore covers build artifacts
+        run: |
+          for f in build/Release/Catapult.app build/Catapult-1.0.dmg .DS_Store .claude/foo .cursor/bar; do
+            if ! git check-ignore -q "$f"; then
+              echo "::error::$f is NOT ignored by .gitignore"
+              exit 1
+            fi
+          done
+          echo ".gitignore covers expected paths."

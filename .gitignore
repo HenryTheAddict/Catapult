@@ -1,0 +1,145 @@
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# --- Xcode: build output ---
+build/
+DerivedData/
+*.xcarchive
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# --- Xcode: user-specific noise inside the project bundle ---
+# Per-user state, breakpoints, schemes, window layouts — never wanted in VCS.
+xcuserdata/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/configuration/
+*.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+# Keep xcshareddata/xcschemes — those are the schemes you DO share.
+
+# --- Swift / SwiftPM ---
+.swiftpm/
+.build/
+Packages/
+Package.pins
+Package.resolved
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+# --- CocoaPods (not used here, but cheap to guard against) ---
+Pods/
+*.xcworkspace
+!default.xcworkspace
+
+# --- Carthage ---
+Carthage/Build/
+
+# --- Fastlane ---
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# --- Distribution artifacts (we generate these locally) ---
+*.dmg
+*.pkg
+*.app
+dmg-staging/
+
+# --- Secrets / signing material — never commit ---
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
+AuthKey_*.p8
+.env
+.env.*
+!.env.example
+
+# --- Editor / tooling ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.tmp/
+tmp/
+
+# --- AI assistants / agentic IDEs ---
+# Anything below is per-developer state — sessions, caches, indexes, prompts —
+# that shouldn't be shared across the team. If you DO want to commit a shared
+# config (e.g. a project-wide CLAUDE.md or .cursorrules), force-add it with
+# `git add -f <file>`.
+
+# Claude Code (Anthropic CLI)
+.claude/
+.claude.json
+.claude.local.json
+CLAUDE.local.md
+.anthropic/
+
+# Cursor
+.cursor/
+.cursorignore
+.cursorindexingignore
+
+# Kiro (AWS)
+.kiro/
+
+# Windsurf / Codeium
+.windsurf/
+.codeium/
+
+# Cline / Roo / Continue
+.cline/
+.roo/
+.continue/
+
+# Aider
+.aider*
+!.aider.conf.yml.example
+
+# Zed
+.zed/
+
+# GitHub Copilot / Copilot Workspace local state
+.copilot/
+copilot-instructions.local.md
+
+# Sourcegraph Cody
+.cody/
+
+# Tabnine
+.tabnine/
+
+# Trae / Augment / Pieces / Warp / Replit Ghostwriter / Codeium chat exports
+.trae/
+.augment/
+.pieces/
+.warp/
+.replit/
+.ghostwriter/
+
+# Generic agent scratch / sessions / transcripts
+.agent/
+.agents/
+.ai/
+.llm/
+.chat-history/
+*.session.json
+*.transcript.jsonl
+
+# --- Coverage / logs ---
+*.gcno
+*.gcda
+*.log
