@@ -1,0 +1,88 @@
+name: release
+
+# Triggered when you push a tag like `v1.0.0`. Reuses the build workflow's
+# Release artifact and attaches the DMG to a draft GitHub Release. Keeping
+# this separate from build.yml means PR builds don't accidentally publish
+# anything.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: draft github release
+    runs-on: macos-15
+    env:
+      SCHEME: Catapult
+      PROJECT: Catapult.xcodeproj
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: build Release
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -derivedDataPath build/derived \
+            CONFIGURATION_BUILD_DIR="$PWD/build/Release" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: package DMG
+        id: dmg
+        run: |
+          set -euo pipefail
+          STAGE="build/dmg-staging"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp -R "build/Release/Catapult.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            "build/Release/Catapult.app/Contents/Info.plist")
+          DMG="build/Catapult-${VERSION}.dmg"
+
+          hdiutil create \
+            -volname "Catapult" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO -fs HFS+ \
+            "$DMG"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+
+      - name: publish draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: Catapult ${{ steps.dmg.outputs.version }}
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          files: ${{ steps.dmg.outputs.dmg }}
+          body: |
+            ## catapult ${{ steps.dmg.outputs.version }}
+
+            menu-bar yt-dlp wrapper for macOS.
+
+            **install:** open the DMG and drag Catapult.app to /Applications.
+
+            ⚠️ this build is ad-hoc signed (no Developer ID / notarization).
+            on first launch, right-click the app → Open to bypass Gatekeeper.
