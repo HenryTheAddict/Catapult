@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Catapult</title>
+    <link>https://github.com/HenryTheAddict/Catapult</link>
+    <description>auto-update feed for catapult.</description>
+    <language>en</language>
+    <!-- ITEMS -->
+  </channel>
+</rss>
