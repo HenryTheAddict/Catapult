@@ -123,5 +123,5 @@ is provided under the **MIT License** (see `LICENSE` in the repo root).
 
 if you spot a missing attribution, an outdated version, or a license
 mismatch, file an issue at
-https://github.com/h3nry/Catapult/issues — or open a PR amending this
+https://github.com/HenryTheAddict/Catapult/issues — or open a PR amending this
 file directly.

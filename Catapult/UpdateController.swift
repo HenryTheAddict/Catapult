@@ -33,7 +33,7 @@ import Sparkle
 //      base64, ~44 chars).
 //
 //   3. In Catapult's target → Info, add these custom keys:
-//        SUFeedURL              = https://h3nry.github.io/Catapult/appcast.xml
+//        SUFeedURL              = https://henrytheaddict.github.io/Catapult/appcast.xml
 //        SUPublicEDKey          = <paste the public key here>
 //        SUEnableInstallerLauncherService = YES   (Sparkle 2 requirement)
 //      Replace the SUFeedURL host with your GitHub Pages URL — by default
@@ -107,7 +107,7 @@ final class UpdateController: NSObject {
         #else
         // Soft fallback so the menu item still does *something* helpful in
         // a build that hasn't yet adopted Sparkle.
-        if let url = URL(string: "https://github.com/h3nry/Catapult/releases/latest") {
+        if let url = URL(string: "https://github.com/HenryTheAddict/Catapult/releases/latest") {
             NSWorkspace.shared.open(url)
         }
         #endif

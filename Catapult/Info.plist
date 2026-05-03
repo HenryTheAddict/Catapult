@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Most keys come straight from Xcode's auto-generated Info.plist
+		via $(MACRO) expansion. We only opted into a hand-written file
+		to add Sparkle's three custom keys, which `INFOPLIST_KEY_*`
+		can't carry through the auto-generator.
+	-->
+
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleIconFile</key>
+	<string>Catapult</string>
+	<key>CFBundleIconName</key>
+	<string>Catapult</string>
+
+	<!-- Menu-bar app: no Dock icon, no main window. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+
+	<key>NSHumanReadableCopyright</key>
+	<string></string>
+
+	<!-- ============== Sparkle ============== -->
+	<!--
+		Auto-update feed lives on the gh-pages branch of the repo;
+		release.yml regenerates it after each tagged release.
+	-->
+	<key>SUFeedURL</key>
+	<string>https://henrytheaddict.github.io/Catapult/appcast.xml</string>
+
+	<!--
+		Ed25519 public key matching the private key stored in your
+		macOS Keychain (and exported as the SPARKLE_ED_PRIVATE_KEY
+		repo secret for CI signing).
+	-->
+	<key>SUPublicEDKey</key>
+	<string>ZR6u0B2BEGOd8xxRcSDm8VCiYFkHMuQjXK/mD2Wn0OI=</string>
+
+	<!-- Sparkle 2 needs the installer launcher service registered. -->
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+</dict>
+</plist>
