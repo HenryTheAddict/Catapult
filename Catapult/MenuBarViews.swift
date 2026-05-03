@@ -130,6 +130,11 @@ struct MenuBarRootView: View {
                 }
                 Button("Clear Finished") { downloads.clearFinished() }
                 Divider()
+                Button("Check for Updates…") {
+                    UpdateController.shared.checkForUpdates()
+                }
+                .disabled(!UpdateController.shared.canCheckForUpdates)
+                Divider()
                 Button("Quit Catapult") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "ellipsis.circle")

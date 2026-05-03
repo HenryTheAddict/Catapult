@@ -108,6 +108,7 @@ final class DownloadManager {
         item.process?.terminate()
         item.status = .cancelled
         item.statusLine = "Cancelled"
+        HistoryStore.shared.record(item)
         pendingIDs.removeAll { $0 == item.id }
         drain()
     }
@@ -299,6 +300,17 @@ final class DownloadManager {
                 args.append(contentsOf: ["--convert-thumbnails", "jpg"])
                 // Some containers need an explicit pp to tag the embedded image.
                 args.append(contentsOf: ["--ppa", "EmbedThumbnail+ffmpeg_o1:-c:v mjpeg"])
+                // YouTube Shorts (and any VP9-only source) end up in a webm
+                // container, which yt-dlp refuses to embed thumbnails into:
+                //   "Supported filetypes for thumbnail embedding are:
+                //    mp3, mkv/mka, ogg/opus/flac, m4a/mp4/m4v/mov"
+                // Force a final remux into mp4 (fallback mkv) so the
+                // thumbnail post-processor always has something to bite.
+                // Only emit this for video-shaped modes — audio mode already
+                // produces a thumbnail-friendly container via -x/--audio-format.
+                if item.mode == .video || item.mode == .cut {
+                    args.append(contentsOf: ["--remux-video", "mp4/mkv"])
+                }
             }
             if settings.embedMetadata  { args.append("--embed-metadata") }
             if settings.embedSubtitles {
@@ -428,6 +440,7 @@ final class DownloadManager {
             item.status = .finished(shown)
             item.progress = 1
             item.statusLine = "Finished"
+            HistoryStore.shared.record(item)
             if settings.openFolderOnFinish {
                 if let f = shown {
                     NSWorkspace.shared.activateFileViewerSelecting([f])
@@ -458,6 +471,7 @@ final class DownloadManager {
         } else {
             item.status = .failed(item.statusLine)
             item.statusLine = "Failed: " + item.statusLine
+            HistoryStore.shared.record(item)
             if settings.showNotifications {
                 NotificationHelper.show(title: "Download failed", body: item.title)
             }

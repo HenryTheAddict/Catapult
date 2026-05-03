@@ -70,10 +70,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
 
-      - name: publish draft release
+      - name: publish github release
+        id: ghr
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          # Publish (not draft) so the DMG asset URL is reachable for
+          # Sparkle's appcast download.
+          draft: false
           name: Catapult ${{ steps.dmg.outputs.version }}
           tag_name: ${{ github.ref_name || inputs.tag }}
           files: ${{ steps.dmg.outputs.dmg }}
@@ -83,6 +86,127 @@ jobs:
             menu-bar yt-dlp wrapper for macOS.
 
             **install:** open the DMG and drag Catapult.app to /Applications.
+            existing installs auto-update via Sparkle.
 
             ⚠️ this build is ad-hoc signed (no Developer ID / notarization).
             on first launch, right-click the app → Open to bypass Gatekeeper.
+
+      # ---------------------------------------------------------------
+      # Sparkle appcast: generate a signed appcast.xml entry pointing at
+      # the freshly-published GitHub Release asset, then push it to the
+      # gh-pages branch where Sparkle reads it from
+      # https://<user>.github.io/<repo>/appcast.xml.
+      #
+      # Skipped automatically when SPARKLE_ED_PRIVATE_KEY isn't set —
+      # cuts a regular release without auto-update support.
+      # ---------------------------------------------------------------
+      - name: check for sparkle key
+        id: sparkle_key
+        run: |
+          if [ -n "${{ secrets.SPARKLE_ED_PRIVATE_KEY }}" ]; then
+            echo "have_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SPARKLE_ED_PRIVATE_KEY secret not set — skipping appcast publish."
+          fi
+
+      - name: install Sparkle CLI tools
+        if: steps.sparkle_key.outputs.have_key == 'true'
+        run: |
+          set -euo pipefail
+          # Pin the Sparkle release used for sign_update / generate_appcast.
+          SPARKLE_VERSION=2.6.4
+          curl -L -o sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir -p sparkle-tools && tar -xf sparkle.tar.xz -C sparkle-tools
+          echo "$PWD/sparkle-tools/bin" >> "$GITHUB_PATH"
+
+      - name: checkout gh-pages
+        if: steps.sparkle_key.outputs.have_key == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+          # Allow the orphan branch to not exist yet — we create it below.
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: build & push appcast
+        if: steps.sparkle_key.outputs.have_key == 'true'
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          DMG_PATH: ${{ steps.dmg.outputs.dmg }}
+          VERSION: ${{ steps.dmg.outputs.version }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # 1. Sign the DMG with sign_update — outputs an Ed25519 signature
+          #    + length attribute for the appcast <enclosure> tag.
+          SIG_LINE=$(sign_update "$DMG_PATH" <<<"$SPARKLE_ED_PRIVATE_KEY")
+          # sign_update prints a fragment like:
+          #   sparkle:edSignature="..." length="123"
+          echo "Signature line: $SIG_LINE"
+
+          DMG_NAME=$(basename "$DMG_PATH")
+          DMG_URL="https://github.com/${REPO}/releases/download/${TAG}/${DMG_NAME}"
+          PUBDATE=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
+
+          # 2. Prepare gh-pages working tree (create orphan branch if absent).
+          if [ ! -d gh-pages/.git ]; then
+            mkdir -p gh-pages
+            cd gh-pages
+            git init -q
+            git checkout --orphan gh-pages
+            git remote add origin "https://github.com/${REPO}.git"
+            cd ..
+          fi
+          cd gh-pages
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 3. Either append to an existing appcast or seed a new one.
+          if [ ! -f appcast.xml ]; then
+            cat > appcast.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Catapult</title>
+              <link>https://github.com/${REPO}</link>
+              <description>auto-update feed for catapult.</description>
+              <language>en</language>
+              <!-- ITEMS -->
+            </channel>
+          </rss>
+          XML
+            sed -i.bak "s|\${REPO}|${REPO}|g" appcast.xml && rm appcast.xml.bak
+          fi
+
+          ITEM=$(cat <<XML
+              <item>
+                <title>Catapult ${VERSION}</title>
+                <link>https://github.com/${REPO}/releases/tag/${TAG}</link>
+                <sparkle:version>${VERSION}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+                <pubDate>${PUBDATE}</pubDate>
+                <enclosure url="${DMG_URL}" type="application/octet-stream" ${SIG_LINE} />
+              </item>
+          XML
+          )
+
+          # Insert ITEM right before the <!-- ITEMS --> placeholder so the
+          # newest release appears first.
+          python3 - <<PY
+          import pathlib, re
+          p = pathlib.Path("appcast.xml")
+          xml = p.read_text()
+          item = """${ITEM}"""
+          xml = xml.replace("<!-- ITEMS -->", item + "\n      <!-- ITEMS -->")
+          p.write_text(xml)
+          PY
+
+          git add appcast.xml
+          git commit -m "appcast: catapult ${VERSION}"
+          git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${REPO}.git" gh-pages

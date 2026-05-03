@@ -469,6 +469,11 @@ final class AppSettings {
     var autoUpdateYtDlpOnLaunch: Bool {
         didSet { UserDefaults.standard.set(autoUpdateYtDlpOnLaunch, forKey: "autoUpdateYtDlpOnLaunch") }
     }
+    /// Whether Sparkle's background update checker is allowed to run.
+    /// Mirrored into Sparkle's own preferences via `UpdateController`.
+    var autoCheckForUpdates: Bool {
+        didSet { UserDefaults.standard.set(autoCheckForUpdates, forKey: "autoCheckForUpdates") }
+    }
     var notificationSound: Bool {
         didSet { UserDefaults.standard.set(notificationSound, forKey: "notificationSound") }
     }
@@ -532,6 +537,7 @@ final class AppSettings {
         self.hasCompletedOnboarding = (d.object(forKey: "hasCompletedOnboarding") as? Bool) ?? false
         self.cookieSource = CookieSource(rawValue: d.string(forKey: "cookieSource") ?? "") ?? .off
         self.autoUpdateYtDlpOnLaunch = (d.object(forKey: "autoUpdateYtDlpOnLaunch") as? Bool) ?? false
+        self.autoCheckForUpdates     = (d.object(forKey: "autoCheckForUpdates") as? Bool) ?? true
         self.notificationSound = (d.object(forKey: "notificationSound") as? Bool) ?? true
         self.historyLimit = (d.object(forKey: "historyLimit") as? Int) ?? 50
         self.proxyURL = d.string(forKey: "proxyURL") ?? ""
