@@ -29,6 +29,8 @@ struct SettingsView: View {
                 .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
             DependenciesTab()
                 .tabItem { Label("Dependencies", systemImage: "shippingbox") }
+            HistoryTab()
+                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
             AboutTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
@@ -111,6 +113,22 @@ private struct GeneralSettingsTab: View {
                         value: $s.maxConcurrent, in: 1...6)
                 Stepper("Keep last \(settings.historyLimit) downloads in the list",
                         value: $s.historyLimit, in: 10...500, step: 10)
+            }
+            Section("Updates") {
+                Toggle("Automatically check for app updates", isOn: $s.autoCheckForUpdates)
+                    .onChange(of: settings.autoCheckForUpdates) { _, new in
+                        UpdateController.shared.automaticallyChecksForUpdates = new
+                    }
+                HStack {
+                    Text("Catapult \(AppVersion.short) (build \(AppVersion.build))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Check now") {
+                        UpdateController.shared.checkForUpdates()
+                    }
+                    .disabled(!UpdateController.shared.canCheckForUpdates)
+                }
             }
             Section {
                 Button("Replay onboarding") {
@@ -1353,5 +1371,202 @@ private struct TiltyAppIcon: View {
 
     private func clamp<T: Comparable>(_ v: T, _ lo: T, _ hi: T) -> T {
         min(max(v, lo), hi)
+    }
+}
+
+// MARK: - App version helper
+
+enum AppVersion {
+    static var short: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+    }
+    static var build: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+    }
+}
+
+// MARK: - History tab
+
+private struct HistoryTab: View {
+    @State private var history = HistoryStore.shared
+    @State private var query: String = ""
+    @State private var filter: Filter = .all
+
+    private enum Filter: String, CaseIterable, Identifiable {
+        case all, finished, failed, cancelled
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .all:       return "All"
+            case .finished:  return "Finished"
+            case .failed:    return "Failed"
+            case .cancelled: return "Cancelled"
+            }
+        }
+    }
+
+    private var filtered: [HistoryEntry] {
+        history.entries.filter { e in
+            switch filter {
+            case .all: break
+            case .finished:  if e.outcome != .finished  { return false }
+            case .failed:    if e.outcome != .failed    { return false }
+            case .cancelled: if e.outcome != .cancelled { return false }
+            }
+            guard !query.isEmpty else { return true }
+            let q = query.lowercased()
+            return e.title.lowercased().contains(q) ||
+                   e.url.lowercased().contains(q) ||
+                   (e.uploader?.lowercased().contains(q) ?? false)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Filter / search bar
+            HStack(spacing: 8) {
+                Picker("", selection: $filter) {
+                    ForEach(Filter.allCases) { f in
+                        Text(f.label).tag(f)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+
+                TextField("Search title, channel, URL…", text: $query)
+                    .textFieldStyle(.roundedBorder)
+
+                Spacer(minLength: 4)
+
+                Button {
+                    HistoryStore.shared.clearAll()
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+                .disabled(history.entries.isEmpty)
+            }
+            .padding(12)
+
+            Divider()
+
+            if filtered.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.tertiary)
+                    Text(history.entries.isEmpty
+                         ? "no downloads yet — go grab something."
+                         : "no results.")
+                        .foregroundStyle(.secondary)
+                        .font(H3.body(size: 13))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(filtered) { entry in
+                        HistoryRow(entry: entry)
+                            .contextMenu {
+                                if entry.outputFile != nil, entry.fileExists {
+                                    Button("Reveal in Finder") {
+                                        HistoryStore.shared.reveal(entry)
+                                    }
+                                }
+                                Button("Copy source URL") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(entry.url, forType: .string)
+                                }
+                                Divider()
+                                Button("Remove from history", role: .destructive) {
+                                    HistoryStore.shared.remove(entry)
+                                }
+                            }
+                    }
+                }
+                .listStyle(.inset)
+            }
+        }
+    }
+}
+
+private struct HistoryRow: View {
+    let entry: HistoryEntry
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    private var iconName: String {
+        switch entry.outcome {
+        case .finished:  return "checkmark.circle.fill"
+        case .failed:    return "xmark.octagon.fill"
+        case .cancelled: return "minus.circle.fill"
+        }
+    }
+    private var iconTint: Color {
+        switch entry.outcome {
+        case .finished:  return H3.green
+        case .failed:    return H3.red
+        case .cancelled: return H3.ink300
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: iconName)
+                .foregroundStyle(iconTint)
+                .font(.system(size: 16))
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title)
+                    .font(H3.body(size: 13, weight: .semibold))
+                    .lineLimit(2)
+                HStack(spacing: 6) {
+                    if let u = entry.uploader, !u.isEmpty {
+                        Text(u).foregroundStyle(.secondary)
+                        Text("•").foregroundStyle(.tertiary)
+                    }
+                    Text(modeLabel)
+                        .foregroundStyle(.secondary)
+                    if let s = entry.fileSizeBytes {
+                        Text("•").foregroundStyle(.tertiary)
+                        Text(ByteCountFormatter.string(fromByteCount: s, countStyle: .file))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("•").foregroundStyle(.tertiary)
+                    Text(Self.dateFormatter.string(from: entry.finishedAt))
+                        .foregroundStyle(.secondary)
+                }
+                .font(H3.body(size: 11))
+                if let err = entry.errorMessage, !err.isEmpty {
+                    Text(err)
+                        .font(H3.body(size: 11))
+                        .foregroundStyle(H3.red)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 4)
+            if entry.outputFile != nil, entry.fileExists {
+                Button {
+                    HistoryStore.shared.reveal(entry)
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.borderless)
+                .help("Reveal in Finder")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var modeLabel: String {
+        switch entry.mode {
+        case .video:         return "video"
+        case .audio:         return "audio"
+        case .cut:           return "clip"
+        case .thumbnailOnly: return "thumbnail"
+        }
     }
 }

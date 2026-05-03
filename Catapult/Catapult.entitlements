@@ -2,16 +2,36 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+        Catapult ships unsandboxed because it needs to:
+        - write into a user-chosen download folder anywhere on disk
+        - spawn yt-dlp and ffmpeg as child processes
+        - read the user's browser cookies (Safari/Chrome/Firefox)
+        Each is incompatible with the App Sandbox without elaborate
+        temporary-exception entitlements that wouldn't survive notarization.
+    -->
     <key>com.apple.security.app-sandbox</key>
     <false/>
-    <key>com.apple.security.cs.allow-jit</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
-    <true/>
+
+    <!--
+        Hardened-runtime exceptions that PREVIOUS versions of this file
+        granted are deliberately omitted now:
+
+          - allow-jit                         (Catapult never JIT-compiles)
+          - allow-unsigned-executable-memory  (no mprotect+exec at runtime)
+          - disable-library-validation        (we want library validation ON)
+          - allow-dyld-environment-variables  (no DYLD_* overrides needed)
+
+        yt-dlp / ffmpeg run as separate child processes with their own
+        signatures and entitlements; the parent app doesn't need to relax
+        its own runtime to launch them. Tightening these closes off
+        memory-corruption-to-RCE primitives and keeps the surface small.
+    -->
+
+    <!--
+        Outbound HTTP only — for yt-dlp/ffmpeg installer downloads,
+        SponsorBlock + YouTube RSS feeds, and Sparkle's appcast.
+    -->
     <key>com.apple.security.network.client</key>
     <true/>
 </dict>
