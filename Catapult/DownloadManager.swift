@@ -309,7 +309,7 @@ final class DownloadManager {
                 // Only emit this for video-shaped modes — audio mode already
                 // produces a thumbnail-friendly container via -x/--audio-format.
                 if item.mode == .video || item.mode == .cut {
-                    args.append(contentsOf: ["--remux-video", "mp4/mkv"])
+                    args.append(contentsOf: ["--remux-video", container.rawValue])
                 }
             }
             if settings.embedMetadata  { args.append("--embed-metadata") }
