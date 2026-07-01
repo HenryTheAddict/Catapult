@@ -477,6 +477,7 @@ final class DownloadManager {
         }
     }
 
+    @MainActor
     private func queueResolvedSpotifyItem(_ item: DownloadItem) {
         item.mode = spotifyMode(from: item.mode)
         item.status = .queued
