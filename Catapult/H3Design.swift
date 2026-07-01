@@ -88,8 +88,10 @@ enum H3 {
     static let radiusBlob: CGFloat = 47
 
     // MARK: Motion
-    static let easeOut    = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)
-    static let easeBounce = Animation.timingCurve(0.34, 1.56, 0.64, 1, duration: 0.32)
+    static let easeOut    = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.28)
+    static let easeBounce = Animation.interpolatingSpring(stiffness: 260, damping: 24)
+    static let appleSnap  = Animation.interpolatingSpring(stiffness: 360, damping: 32)
+    static let appleDrift = Animation.timingCurve(0.2, 0.9, 0.2, 1, duration: 0.42)
 
     // MARK: Fonts — uses the bundled TTFs if present, otherwise sensible system fallbacks.
     static func display(size: CGFloat, weight: Font.Weight = .medium) -> Font {
@@ -131,6 +133,118 @@ extension Color {
             return match == .darkAqua ? NSColor(dark) : NSColor(light)
         }
         return Color(nsColor: dyn)
+    }
+}
+
+// MARK: - Adaptive sky background
+//
+// gradSky is tuned for light mode (cyan to white). In dark mode we want a
+// matching deep-night palette. SwiftUI gradients can't be made dynamic at
+// the Color layer the way Color.dynamic(...) can, so we wrap the choice
+// in a tiny view that picks per colorScheme.
+
+struct H3SkyBackground: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        Group {
+            if scheme == .dark {
+                // Deep ocean: nearly-black at top, indigo at bottom.
+                LinearGradient(
+                    colors: [Color(hex: 0x05080f), Color(hex: 0x132037)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            } else {
+                H3.gradSky
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
+// MARK: - H3 window chrome
+//
+// Applies the h3 transparent-title-bar treatment to the hosting NSWindow:
+// the title bar disappears, the content extends to the very top, and the
+// background gradient flows underneath the traffic lights. Drop on the
+// root view of any window that wants to feel native h3.
+
+struct H3WindowChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background(H3WindowChromeAccessor())
+    }
+}
+
+extension View {
+    /// Apply h3-style transparent title bar to the hosting window.
+    func h3WindowChrome() -> some View { modifier(H3WindowChrome()) }
+}
+
+private struct H3WindowChromeAccessor: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { context.coordinator.attach(to: v.window) }
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { context.coordinator.attach(to: nsView.window) }
+    }
+
+    final class Coordinator {
+        private weak var window: NSWindow?
+        private var observers: [NSObjectProtocol] = []
+
+        deinit {
+            observers.forEach(NotificationCenter.default.removeObserver)
+        }
+
+        func attach(to newWindow: NSWindow?) {
+            guard let newWindow else { return }
+            if window !== newWindow {
+                observers.forEach(NotificationCenter.default.removeObserver)
+                observers.removeAll()
+                window = newWindow
+                let names: [Notification.Name] = [
+                    NSWindow.didBecomeKeyNotification,
+                    NSWindow.didResignKeyNotification,
+                    NSWindow.didBecomeMainNotification,
+                    NSWindow.didResignMainNotification
+                ]
+                observers = names.map { name in
+                    NotificationCenter.default.addObserver(
+                        forName: name,
+                        object: newWindow,
+                        queue: .main
+                    ) { [weak self] _ in
+                        self?.apply()
+                    }
+                }
+            }
+            apply()
+        }
+
+        private func apply() {
+            applyH3WindowChrome(to: window)
+        }
+    }
+
+    private static func applyH3WindowChrome(to window: NSWindow?) {
+        guard let window else { return }
+        window.styleMask.insert(.fullSizeContentView)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.toolbar = nil
+        window.toolbarStyle = .unifiedCompact
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.isMovableByWindowBackground = false
+        if #available(macOS 11.0, *) {
+            window.titlebarSeparatorStyle = .none
+        }
     }
 }
 
@@ -209,7 +323,7 @@ struct GradientGlyph: View {
     }
 }
 
-// MARK: - Glossy h3 button
+// MARK: - h3 button
 
 struct H3Button<Label: View>: View {
     var gradient: LinearGradient = H3.gradDeep
@@ -224,14 +338,11 @@ struct H3Button<Label: View>: View {
         Button(action: action) {
             ZStack {
                 RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                    .fill(filled ? AnyShapeStyle(gradient) : AnyShapeStyle(Color.white.opacity(0.0001)))
+                    .fill(filled ? AnyShapeStyle(H3.blue400) : AnyShapeStyle(H3.cardFill.opacity(0.72)))
                     .overlay(
                         RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                            .strokeBorder(Color.black.opacity(filled ? 0.25 : 0.18), lineWidth: 1)
+                            .strokeBorder(filled ? H3.blue300.opacity(0.35) : H3.cardStroke, lineWidth: 1)
                     )
-                RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                    .fill(H3.glossTop)
-                    .allowsHitTesting(false)
                 label()
                     .foregroundStyle(filled ? Color.white : H3.blue400)
                     .font(H3.body(size: 13, weight: .semibold))
@@ -240,8 +351,11 @@ struct H3Button<Label: View>: View {
             .contentShape(RoundedRectangle(cornerRadius: H3.radius2, style: .continuous))
         }
         .buttonStyle(.plain)
-        .scaleEffect(pressing ? 0.97 : (hovering ? 1.03 : 1.0))
-        .shadow(color: H3.shadowDrop, radius: hovering ? 6 : 3, x: 0, y: hovering ? 5 : 3)
+        .scaleEffect(pressing ? 0.98 : (hovering ? 1.01 : 1.0))
+        .shadow(color: H3.shadowDrop.opacity(filled ? 0.16 : 0.08),
+                radius: hovering ? 8 : 4,
+                x: 0,
+                y: hovering ? 5 : 2)
         .animation(H3.easeBounce, value: hovering)
         .animation(H3.easeOut, value: pressing)
         .onHover { hovering = $0 }

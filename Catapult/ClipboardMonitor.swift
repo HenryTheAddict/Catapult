@@ -17,30 +17,55 @@ final class ClipboardMonitor {
     private var changeCount: Int = NSPasteboard.general.changeCount
     private var timer: Timer?
     private var seenURLs: Set<String> = []
+    private var seenURLOrder: [String] = []
 
-    static let youtubeRegex: NSRegularExpression = {
-        let pattern = #"https?://(?:www\.|m\.|music\.)?(?:youtube\.com/(?:watch\?[^\s]*v=|shorts/|embed/|live/|playlist\?list=)|youtu\.be/)[A-Za-z0-9_\-]+[^\s]*"#
-        return try! NSRegularExpression(pattern: pattern, options: [])
-    }()
+    private var lastPasteboardActivityAt = Date.distantPast
 
-    /// Broad URL extractor for the manual "download any URL" flow.
+    private let fastPollInterval: TimeInterval = 1.25
+    private let idlePollInterval: TimeInterval = 4.0
+    private let idleAfter: TimeInterval = 60
+    private let maxSeenURLs = 40
+
+    /// Broad URL extractor for the manual "download any URL" flow and
+    /// supported-site clipboard detection.
     static let anyURLRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: #"https?://[^\s]+"#, options: [])
+        try! NSRegularExpression(pattern: #"https?://[^\s<>"']+"#, options: [])
     }()
 
     private init() {}
 
     func start() {
         stop()
-        let t = Timer(timeInterval: 0.6, repeats: true) { [weak self] _ in
+        guard AppSettings.shared.clipboardMonitoring else { return }
+        changeCount = NSPasteboard.general.changeCount
+        lastPasteboardActivityAt = Date()
+        scheduleNextTick()
+    }
+
+    private func scheduleNextTick() {
+        guard timer == nil, AppSettings.shared.clipboardMonitoring else { return }
+        let interval = currentPollInterval
+        let t = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            self?.timer = nil
             self?.tick()
         }
-        RunLoop.main.add(t, forMode: .common)
+        t.tolerance = min(interval * 0.4, 1.5)
+        RunLoop.main.add(t, forMode: .default)
         self.timer = t
+    }
+
+    private var currentPollInterval: TimeInterval {
+        Date().timeIntervalSince(lastPasteboardActivityAt) < idleAfter
+            ? fastPollInterval
+            : idlePollInterval
     }
 
     func stop() {
         timer?.invalidate(); timer = nil
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        enabled ? start() : stop()
     }
 
     func clearDetected() {
@@ -49,14 +74,32 @@ final class ClipboardMonitor {
     }
 
     private func tick() {
-        guard AppSettings.shared.clipboardMonitoring else { return }
+        guard AppSettings.shared.clipboardMonitoring else {
+            stop()
+            return
+        }
+        autoreleasepool {
+            if readPasteboard() {
+                lastPasteboardActivityAt = Date()
+            }
+        }
+        scheduleNextTick()
+    }
+
+    @discardableResult
+    private func readPasteboard() -> Bool {
         let pb = NSPasteboard.general
-        guard pb.changeCount != changeCount else { return }
+        guard pb.changeCount != changeCount else { return false }
         changeCount = pb.changeCount
-        guard let s = pb.string(forType: .string) else { return }
-        guard let found = Self.firstYouTubeURL(in: s) else { return }
-        if seenURLs.contains(found) { return }
+        guard let s = pb.string(forType: .string) else { return true }
+        guard let found = Self.firstDownloadURL(in: s) else { return true }
+        if seenURLs.contains(found) { return true }
         seenURLs.insert(found)
+        seenURLOrder.append(found)
+        if seenURLOrder.count > maxSeenURLs {
+            let evicted = seenURLOrder.removeFirst()
+            seenURLs.remove(evicted)
+        }
         detectedURL = found
         detectedAt = Date()
         if !history.contains(found) {
@@ -68,33 +111,64 @@ final class ClipboardMonitor {
                 DownloadManager.shared.enqueue(url: found, mode: .video)
             }
         } else if AppSettings.shared.showNotifications {
-            NotificationHelper.show(title: "YouTube link copied",
-                                    body: "Click the menu bar icon to download.")
+            let site = SupportedSite.match(url: found)
+            NotificationHelper.showClipboardLink(url: found, site: site)
         }
-    }
-
-    static func firstYouTubeURL(in s: String) -> String? {
-        let ns = s as NSString
-        let r = youtubeRegex.firstMatch(in: s, range: NSRange(location: 0, length: ns.length))
-        guard let r else { return nil }
-        return ns.substring(with: r.range)
+        return true
     }
 
     static func firstURL(in s: String) -> String? {
+        urlCandidates(in: s).first
+    }
+
+    /// Prefer a known media/social host, then fall back to any URL so
+    /// yt-dlp's long tail still works.
+    static func firstDownloadURL(in s: String) -> String? {
+        let candidates = urlCandidates(in: s)
+        return candidates.first { SupportedSite.match(url: $0) != .generic }
+            ?? candidates.first
+    }
+
+    private static func urlCandidates(in s: String) -> [String] {
         let ns = s as NSString
-        let r = anyURLRegex.firstMatch(in: s, range: NSRange(location: 0, length: ns.length))
-        guard let r else { return nil }
-        return ns.substring(with: r.range)
+        let matches = anyURLRegex.matches(in: s, range: NSRange(location: 0, length: ns.length))
+        return matches.compactMap { match in
+            cleanURLCandidate(ns.substring(with: match.range))
+        }
+    }
+
+    private static func cleanURLCandidate(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: #".,;:!?)]}>"'”’»"#))
+        guard let comps = URLComponents(string: cleaned),
+              let scheme = comps.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              comps.host != nil
+        else { return nil }
+        return cleaned
     }
 }
 
 enum NotificationHelper {
+    static let clipboardLinkCategory = "h3nry.catapult.notification.clipboardLink"
+    private static let actionDownload = "h3nry.catapult.action.download"
+    private static let actionDownloadCopy = "h3nry.catapult.action.downloadCopy"
+    private static let actionUnderLimitCopy = "h3nry.catapult.action.underLimitCopy"
+
     private static var authorized = false
     private static var requested = false
+    private static var configured = false
+
+    static func configure(delegate: UNUserNotificationCenterDelegate) {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = delegate
+        registerCategories()
+    }
 
     static func requestAuthorization() {
         guard !requested else { return }
         requested = true
+        registerCategories()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { ok, _ in
             authorized = ok
         }
@@ -105,9 +179,80 @@ enum NotificationHelper {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.sound = .default
+        if AppSettings.shared.notificationSound {
+            content.sound = .default
+        }
         let req = UNNotificationRequest(identifier: UUID().uuidString,
                                         content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+
+    static func showClipboardLink(url: String, site: SupportedSite) {
+        requestAuthorization()
+        let content = UNMutableNotificationContent()
+        content.title = site.copiedNotificationTitle
+        content.body = "Download it, copy the finished file, or make a small copy."
+        content.categoryIdentifier = clipboardLinkCategory
+        content.userInfo = [
+            "url": url,
+            "site": site.rawValue
+        ]
+        if AppSettings.shared.notificationSound {
+            content.sound = .default
+        }
+        let req = UNNotificationRequest(identifier: "clipboard-link-\(UUID().uuidString)",
+                                        content: content,
+                                        trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+
+    @MainActor
+    static func handleNotificationAction(actionIdentifier: String,
+                                         categoryIdentifier: String,
+                                         url: String?) {
+        guard categoryIdentifier == clipboardLinkCategory,
+              let url,
+              let cleaned = ClipboardMonitor.firstDownloadURL(in: url) else {
+            return
+        }
+
+        switch actionIdentifier {
+        case actionDownload:
+            DownloadManager.shared.enqueue(url: cleaned, mode: .video)
+        case actionDownloadCopy:
+            DownloadManager.shared.enqueue(url: cleaned,
+                                           mode: .video,
+                                           copyFileAfterFinish: true)
+        case actionUnderLimitCopy:
+            DownloadManager.shared.enqueue(
+                url: cleaned,
+                mode: .video,
+                overrides: DownloadOverrides(maxFilesizeMB: AppSettings.shared.quickSizeLimitMB),
+                copyFileAfterFinish: true
+            )
+        default:
+            return
+        }
+        ClipboardMonitor.shared.clearDetected()
+    }
+
+    private static func registerCategories() {
+        guard !configured else { return }
+        configured = true
+
+        let download = UNNotificationAction(identifier: actionDownload,
+                                            title: "Download",
+                                            options: [])
+        let downloadCopy = UNNotificationAction(identifier: actionDownloadCopy,
+                                                title: "Download + Copy",
+                                                options: [])
+        let underLimitCopy = UNNotificationAction(identifier: actionUnderLimitCopy,
+                                                  title: "Under 10 MB + Copy",
+                                                  options: [])
+        let clipboardLink = UNNotificationCategory(identifier: clipboardLinkCategory,
+                                                  actions: [download, downloadCopy, underLimitCopy],
+                                                  intentIdentifiers: [],
+                                                  options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([clipboardLink])
     }
 }

@@ -35,12 +35,24 @@ enum VideoContainer: String, CaseIterable, Identifiable, Codable {
     case mp4, mkv, webm
     var id: String { rawValue }
     var label: String { rawValue.uppercased() }
+    var supportsEmbeddedThumbnail: Bool {
+        switch self {
+        case .mp4, .mkv: return true
+        case .webm:      return false
+        }
+    }
 }
 
 enum AudioFormat: String, CaseIterable, Identifiable, Codable {
     case mp3, m4a, opus, flac, wav
     var id: String { rawValue }
     var label: String { rawValue.uppercased() }
+    var supportsEmbeddedThumbnail: Bool {
+        switch self {
+        case .mp3, .m4a, .opus, .flac: return true
+        case .wav:                     return false
+        }
+    }
 }
 
 enum FilenamePreset: String, CaseIterable, Identifiable, Codable {
@@ -290,7 +302,7 @@ enum DevicePreset: String, CaseIterable, Identifiable, Codable {
 }
 
 enum SupportedSite: String, CaseIterable, Identifiable, Codable {
-    case youtube, tiktok, twitter, reddit, instagram, facebook, twitch, vimeo, soundcloud, bilibili, bluesky, generic
+    case youtube, tiktok, twitter, reddit, instagram, facebook, twitch, vimeo, soundcloud, spotify, bilibili, bluesky, generic
 
     var id: String { rawValue }
     var title: String {
@@ -304,15 +316,39 @@ enum SupportedSite: String, CaseIterable, Identifiable, Codable {
         case .twitch:     return "twitch"
         case .vimeo:      return "vimeo"
         case .soundcloud: return "soundcloud"
+        case .spotify:    return "spotify"
         case .bilibili:   return "bilibili"
         case .bluesky:    return "bluesky"
         case .generic:    return "anything else"
         }
     }
+    var notificationName: String {
+        switch self {
+        case .youtube:    return "YouTube"
+        case .tiktok:     return "TikTok"
+        case .twitter:    return "X / Twitter"
+        case .reddit:     return "Reddit"
+        case .instagram:  return "Instagram"
+        case .facebook:   return "Facebook"
+        case .twitch:     return "Twitch"
+        case .vimeo:      return "Vimeo"
+        case .soundcloud: return "SoundCloud"
+        case .spotify:    return "Spotify"
+        case .bilibili:   return "Bilibili"
+        case .bluesky:    return "Bluesky"
+        case .generic:    return "Link"
+        }
+    }
+    var copiedNotificationTitle: String {
+        self == .generic ? "Link copied" : "\(notificationName) link copied"
+    }
+    var clipboardDetectionLabel: String {
+        self == .generic ? "Detected link on clipboard" : "Detected \(notificationName) link"
+    }
     var blurb: String {
         switch self {
         case .youtube:    return "videos, shorts, live, music — the flagship."
-        case .tiktok:     return "short-form video, with or without the watermark."
+        case .tiktok:     return "short-form video, private shares, and watermark-free grabs."
         case .twitter:    return "video tweets, spaces, and replies."
         case .reddit:     return "v.redd.it, linked media, and crossposts."
         case .instagram:  return "reels, posts, stories — cookies unlock private."
@@ -320,6 +356,7 @@ enum SupportedSite: String, CaseIterable, Identifiable, Codable {
         case .twitch:     return "clips, vods, and past broadcasts."
         case .vimeo:      return "creator uploads, including password-protected."
         case .soundcloud: return "tracks and sets as audio."
+        case .spotify:    return "tracks, albums, and playlists through a YouTube Music bridge."
         case .bilibili:   return "mainland china's youtube — works fine."
         case .bluesky:    return "video posts from the at-proto network."
         case .generic:    return "anything yt-dlp can grab — 1500+ sites."
@@ -336,6 +373,7 @@ enum SupportedSite: String, CaseIterable, Identifiable, Codable {
         case .twitch:     return "gamecontroller.fill"
         case .vimeo:      return "film.fill"
         case .soundcloud: return "waveform"
+        case .spotify:    return "music.quarternote.3"
         case .bilibili:   return "tv.fill"
         case .bluesky:    return "cloud.fill"
         case .generic:    return "globe"
@@ -352,6 +390,7 @@ enum SupportedSite: String, CaseIterable, Identifiable, Codable {
         case .twitch:     return ["twitch.tv"]
         case .vimeo:      return ["vimeo.com"]
         case .soundcloud: return ["soundcloud.com"]
+        case .spotify:    return ["spotify.com", "open.spotify.com", "spotify.link"]
         case .bilibili:   return ["bilibili.com", "b23.tv"]
         case .bluesky:    return ["bsky.app"]
         case .generic:    return []
@@ -407,8 +446,14 @@ final class AppSettings {
     var audioQualityKbps: Int {
         didSet { UserDefaults.standard.set(audioQualityKbps, forKey: "audioQualityKbps") }
     }
+    var normalizeAudio: Bool {
+        didSet { UserDefaults.standard.set(normalizeAudio, forKey: "normalizeAudio") }
+    }
     var clipboardMonitoring: Bool {
-        didSet { UserDefaults.standard.set(clipboardMonitoring, forKey: "clipboardMonitoring") }
+        didSet {
+            UserDefaults.standard.set(clipboardMonitoring, forKey: "clipboardMonitoring")
+            ClipboardMonitor.shared.setEnabled(clipboardMonitoring)
+        }
     }
     var autoStartDownload: Bool {
         didSet { UserDefaults.standard.set(autoStartDownload, forKey: "autoStartDownload") }
@@ -429,10 +474,36 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(writeThumbnail, forKey: "writeThumbnail") }
     }
     var maxConcurrent: Int {
-        didSet { UserDefaults.standard.set(maxConcurrent, forKey: "maxConcurrent") }
+        didSet {
+            UserDefaults.standard.set(maxConcurrent, forKey: "maxConcurrent")
+            Task { @MainActor in DownloadManager.shared.refreshConcurrency() }
+        }
+    }
+    /// yt-dlp fragment parallelism for a single download. This speeds up
+    /// DASH/HLS-style sources by fetching multiple fragments at once.
+    var concurrentFragments: Int {
+        didSet { UserDefaults.standard.set(concurrentFragments, forKey: "concurrentFragments") }
     }
     var openFolderOnFinish: Bool {
         didSet { UserDefaults.standard.set(openFolderOnFinish, forKey: "openFolderOnFinish") }
+    }
+    var copyFileAfterDownload: Bool {
+        didSet { UserDefaults.standard.set(copyFileAfterDownload, forKey: "copyFileAfterDownload") }
+    }
+    var pocketRemoteEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(pocketRemoteEnabled, forKey: "pocketRemoteEnabled")
+            Task { @MainActor in PocketServer.shared.applySettings() }
+        }
+    }
+    var pocketRemotePort: Int {
+        didSet {
+            UserDefaults.standard.set(pocketRemotePort, forKey: "pocketRemotePort")
+            Task { @MainActor in PocketServer.shared.applySettings() }
+        }
+    }
+    var pocketRemoteToken: String {
+        didSet { UserDefaults.standard.set(pocketRemoteToken, forKey: "pocketRemoteToken") }
     }
     var filenameTemplate: String {
         didSet { UserDefaults.standard.set(filenameTemplate, forKey: "filenameTemplate") }
@@ -469,8 +540,8 @@ final class AppSettings {
     var autoUpdateYtDlpOnLaunch: Bool {
         didSet { UserDefaults.standard.set(autoUpdateYtDlpOnLaunch, forKey: "autoUpdateYtDlpOnLaunch") }
     }
-    /// Whether Sparkle's background update checker is allowed to run.
-    /// Mirrored into Sparkle's own preferences via `UpdateController`.
+    /// Whether Catapult's future app-update checker is allowed to run.
+    /// Mirrored through `UpdateController`.
     var autoCheckForUpdates: Bool {
         didSet { UserDefaults.standard.set(autoCheckForUpdates, forKey: "autoCheckForUpdates") }
     }
@@ -516,6 +587,7 @@ final class AppSettings {
         self.videoContainer = VideoContainer(rawValue: d.string(forKey: "videoContainer") ?? "") ?? .mp4
         self.audioFormat = AudioFormat(rawValue: d.string(forKey: "audioFormat") ?? "") ?? .mp3
         self.audioQualityKbps = (d.object(forKey: "audioQualityKbps") as? Int) ?? 192
+        self.normalizeAudio = (d.object(forKey: "normalizeAudio") as? Bool) ?? true
         self.clipboardMonitoring = (d.object(forKey: "clipboardMonitoring") as? Bool) ?? true
         self.autoStartDownload = (d.object(forKey: "autoStartDownload") as? Bool) ?? false
         self.showNotifications = (d.object(forKey: "showNotifications") as? Bool) ?? true
@@ -524,7 +596,19 @@ final class AppSettings {
         self.embedSubtitles = (d.object(forKey: "embedSubtitles") as? Bool) ?? false
         self.writeThumbnail = (d.object(forKey: "writeThumbnail") as? Bool) ?? false
         self.maxConcurrent = (d.object(forKey: "maxConcurrent") as? Int) ?? 2
+        self.concurrentFragments = (d.object(forKey: "concurrentFragments") as? Int) ?? 4
         self.openFolderOnFinish = (d.object(forKey: "openFolderOnFinish") as? Bool) ?? false
+        self.copyFileAfterDownload = (d.object(forKey: "copyFileAfterDownload") as? Bool) ?? false
+        self.pocketRemoteEnabled = (d.object(forKey: "pocketRemoteEnabled") as? Bool) ?? true
+        self.pocketRemotePort = (d.object(forKey: "pocketRemotePort") as? Int) ?? 42173
+        if let storedPocketToken = d.string(forKey: "pocketRemoteToken") {
+            self.pocketRemoteToken = storedPocketToken
+        } else {
+            let generatedPocketToken = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            self.pocketRemoteToken = generatedPocketToken
+            d.set(generatedPocketToken, forKey: "pocketRemoteToken")
+            d.synchronize()
+        }
         let storedPreset = FilenamePreset(rawValue: d.string(forKey: "filenamePreset") ?? "") ?? .normal
         self.filenamePreset = storedPreset
         self.filenameTemplate = d.string(forKey: "filenameTemplate")
@@ -565,14 +649,18 @@ final class AppSettings {
         URL(fileURLWithPath: downloadFolderPath, isDirectory: true)
     }
 
-    /// Returns the effective cookie source for a given URL. If the site has
-    /// cookies explicitly enabled, use the global `cookieSource`; otherwise
-    /// fall through to the global default (which may itself be `.off`).
+    /// Returns the effective cookie source for a given URL. Cookies are only
+    /// used when both a browser is selected globally and the matched site is
+    /// explicitly enabled in Settings > Sites.
     func cookieSource(for url: String) -> CookieSource {
         let site = SupportedSite.match(url: url)
         if siteCookies.contains(site), cookieSource != .off {
             return cookieSource
         }
-        return cookieSource
+        return .off
+    }
+
+    func cookiesEnabled(for url: String) -> Bool {
+        cookieSource(for: url) != .off
     }
 }

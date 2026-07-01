@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /catapult/
+Sitemap: https://h3nry.xyz/sitemap.xml
+Sitemap: https://h3nry.xyz/catapult/sitemap.xml

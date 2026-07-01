@@ -10,10 +10,24 @@ import Testing
 
 struct CatapultTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+    @Test func detectsKnownSocialLinksBeforeGenericLinks() async throws {
+        let text = "read this https://example.com first, then grab https://www.instagram.com/reel/ABC123/?utm_source=copy-link"
+        let picked = await MainActor.run { ClipboardMonitor.firstDownloadURL(in: text) }
+        #expect(picked == "https://www.instagram.com/reel/ABC123/?utm_source=copy-link")
+    }
+
+    @Test func trimsCommonCopiedLinkPunctuation() async throws {
+        let picked = await MainActor.run {
+            ClipboardMonitor.firstDownloadURL(in: "watch: https://www.tiktok.com/@catapult/video/12345).")
+        }
+        #expect(picked == "https://www.tiktok.com/@catapult/video/12345")
+    }
+
+    @Test func fallsBackToGenericYtDlpURL() async throws {
+        let picked = await MainActor.run {
+            ClipboardMonitor.firstDownloadURL(in: "https://example.com/media/clip")
+        }
+        #expect(picked == "https://example.com/media/clip")
     }
 
 }

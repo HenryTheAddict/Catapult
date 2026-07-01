@@ -6,10 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		BA9C075F2FA7C6DB00C3F475 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = BA9C075E2FA7C6DB00C3F475 /* Sparkle */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXContainerItemProxy section */
 		BA41B0122F9494EF00F99A61 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -56,7 +52,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BA9C075F2FA7C6DB00C3F475 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -117,7 +112,6 @@
 			);
 			name = Catapult;
 			packageProductDependencies = (
-				BA9C075E2FA7C6DB00C3F475 /* Sparkle */,
 			);
 			productName = Catapult;
 			productReference = BA41AFFF2F9494EC00F99A61 /* Catapult.app */;
@@ -202,7 +196,6 @@
 			mainGroup = BA41AFF62F9494EB00F99A61;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				BA9C075D2FA7C6DB00C3F475 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BA41B0002F9494EC00F99A61 /* Products */;
@@ -406,7 +399,7 @@
 				CODE_SIGN_ENTITLEMENTS = Catapult/Catapult.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 48;
 				DEVELOPMENT_TEAM = F5UZLAVP6R;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -418,7 +411,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.1;
+				MARKETING_VERSION = 1.1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = h3nry.Catapult;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -439,7 +432,7 @@
 				CODE_SIGN_ENTITLEMENTS = Catapult/Catapult.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 48;
 				DEVELOPMENT_TEAM = F5UZLAVP6R;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -451,7 +444,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.1;
+				MARKETING_VERSION = 1.1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = h3nry.Catapult;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -585,24 +578,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		BA9C075D2FA7C6DB00C3F475 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.9.1;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		BA9C075E2FA7C6DB00C3F475 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = BA9C075D2FA7C6DB00C3F475 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = BA41AFF72F9494EB00F99A61 /* Project object */;
 }

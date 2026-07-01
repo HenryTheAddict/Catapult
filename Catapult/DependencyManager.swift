@@ -90,6 +90,42 @@ final class DependencyManager {
         }
     }
 
+    @MainActor
+    func troubleshootForDownloadFailure(message: String) async -> Bool {
+        let lower = message.lowercased()
+        let shouldRefreshFfmpeg = !FileManager.default.fileExists(atPath: ffmpegPath.path) ||
+            lower.contains("ffmpeg") ||
+            lower.contains("ffprobe") ||
+            lower.contains("postprocess") ||
+            lower.contains("merger") ||
+            lower.contains("convert") ||
+            lower.contains("thumbnail") ||
+            lower.contains("audio") ||
+            lower.contains("clip")
+
+        state = .checking
+        do {
+            try await downloadYtDlp()
+            ytDlpVersion = try? await runForOutput(ytDlpPath, ["--version"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if shouldRefreshFfmpeg {
+                try? FileManager.default.removeItem(at: ffmpegPath)
+                try? FileManager.default.removeItem(at: ffprobePath)
+                try await downloadFfmpeg()
+            } else if !FileManager.default.fileExists(atPath: ffmpegPath.path) {
+                try await downloadFfmpeg()
+            }
+            if let full = try? await runForOutput(ffmpegPath, ["-version"]) {
+                ffmpegVersion = full.split(separator: "\n").first.map(String.init) ?? full
+            }
+            state = .ready
+            return true
+        } catch {
+            state = .error("Auto-troubleshoot failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     // MARK: - Downloads
 
     @MainActor
@@ -195,7 +231,7 @@ final class DependencyManager {
     private func clearQuarantine(_ url: URL) throws -> Int32 {
         let t = Process()
         t.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
-        t.arguments = ["-dr", "com.apple.quarantine", url.path]
+        t.arguments = ["-d", "com.apple.quarantine", url.path]
         t.standardOutput = Pipe(); t.standardError = Pipe()
         try t.run(); t.waitUntilExit()
         return t.terminationStatus

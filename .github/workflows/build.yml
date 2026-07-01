@@ -8,10 +8,10 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
     tags: ['v*']
   pull_request:
-    branches: [main]
+    branches: [master, main]
   workflow_dispatch:
 
 concurrency:

@@ -102,8 +102,7 @@ final class StatusBarDropReceiver: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let text = extractString(from: sender) else { return false }
-        let picked = ClipboardMonitor.firstYouTubeURL(in: text)
-                  ?? ClipboardMonitor.firstURL(in: text)
+        let picked = ClipboardMonitor.firstDownloadURL(in: text)
                   ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !picked.isEmpty else { return false }
         Task { @MainActor in

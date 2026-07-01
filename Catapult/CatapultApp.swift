@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 @main
 struct CatapultApp: App {
@@ -68,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         FontLoader.registerBundled()
-        NotificationHelper.requestAuthorization()
+        NotificationHelper.configure(delegate: self)
 
         // Listen for "another copy tried to launch" pings so we can surface
         // the menu bar window. Posted by the would-be second instance just
@@ -80,10 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        // Kick the auto-updater. No-op when Sparkle isn't linked.
+        // Kick the update backend. Currently a no-op until the replacement
+        // updater is wired in.
         UpdateController.shared.start()
 
         Task { @MainActor in
+            CLIInstaller.refreshIfInstalled()
+            PocketServer.shared.applySettings()
             await DependencyManager.shared.ensureInstalled()
             ClipboardMonitor.shared.start()
             SubscriptionManager.shared.start()
@@ -139,5 +143,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Fallback: just bring the app to the front. The user can click
         // the menu bar icon themselves.
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                             didReceive response: UNNotificationResponse,
+                                             withCompletionHandler completionHandler: @escaping () -> Void) {
+        let actionIdentifier = response.actionIdentifier
+        let categoryIdentifier = response.notification.request.content.categoryIdentifier
+        let url = response.notification.request.content.userInfo["url"] as? String
+        Task { @MainActor in
+            NotificationHelper.handleNotificationAction(actionIdentifier: actionIdentifier,
+                                                        categoryIdentifier: categoryIdentifier,
+                                                        url: url)
+            completionHandler()
+        }
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                             willPresent notification: UNNotification,
+                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        Task { @MainActor in
+            var options: UNNotificationPresentationOptions = [.banner, .list]
+            if AppSettings.shared.notificationSound {
+                options.insert(.sound)
+            }
+            completionHandler(options)
+        }
     }
 }

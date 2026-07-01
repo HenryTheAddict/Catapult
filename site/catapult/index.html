@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111317">
+  <meta name="description" content="Download Catapult for macOS and use the static h3nry.xyz/catapult update channel.">
+  <meta property="og:title" content="Catapult for macOS">
+  <meta property="og:description" content="A fast macOS video downloader with a static .upsweet update channel and DMG installer.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://h3nry.xyz/catapult/">
+  <meta property="og:image" content="https://h3nry.xyz/catapult/assets/catapultidle.svg">
+  <link rel="canonical" href="https://h3nry.xyz/catapult/">
+  <link rel="sitemap" type="application/xml" href="https://h3nry.xyz/catapult/sitemap.xml">
+  <link rel="icon" href="assets/catapultidle.svg" type="image/svg+xml">
+  <title>Catapult for macOS</title>
+  <style>
+    :root {
+      --bg: #111317;
+      --bg-soft: #181b20;
+      --paper: #f7f1ea;
+      --paper-dim: #e9dfd5;
+      --ink: #f8f3ec;
+      --muted: #bcb1a6;
+      --dark-ink: #161311;
+      --dark-muted: #665d55;
+      --line: rgba(248, 243, 236, .16);
+      --line-dark: rgba(22, 19, 17, .14);
+      --orange: #ff3b12;
+      --orange-soft: #ff744f;
+      --green: #24d17e;
+      --blue: #66b7ff;
+      --shadow: 0 28px 80px rgba(0, 0, 0, .34);
+      --ease: cubic-bezier(.2, .85, .2, 1);
+      color-scheme: dark;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      min-height: 100%;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px) 0 0 / 54px 54px,
+        linear-gradient(180deg, #1a1716 0%, var(--bg) 36%, #0d1014 100%);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image: radial-gradient(rgba(255, 255, 255, .12) .65px, transparent .65px);
+      background-size: 4px 4px;
+      opacity: .16;
+      mix-blend-mode: screen;
+    }
+
+    a { color: inherit; }
+
+    .skip-link {
+      position: fixed;
+      left: 16px;
+      top: 12px;
+      z-index: 5;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--paper);
+      color: var(--dark-ink);
+      transform: translateY(-140%);
+    }
+
+    .skip-link:focus { transform: translateY(0); }
+
+    .wrap {
+      position: relative;
+      width: min(1180px, calc(100% - 34px));
+      margin: 0 auto;
+      padding: 20px 0 52px;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 42px;
+    }
+
+    .brand,
+    .nav-links,
+    .hero-actions,
+    .status,
+    .metric-row,
+    .endpoint,
+    .footer-links {
+      display: flex;
+      align-items: center;
+    }
+
+    .brand {
+      gap: 12px;
+      text-decoration: none;
+      font-weight: 820;
+      letter-spacing: 0;
+    }
+
+    .brand img {
+      width: 42px;
+      height: 42px;
+      border-radius: 13px;
+      box-shadow: 0 18px 34px rgba(255, 59, 18, .22);
+    }
+
+    .nav-links {
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .nav-links a,
+    .button {
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      text-decoration: none;
+      transition: transform 220ms var(--ease), border-color 220ms ease, background 220ms ease, color 220ms ease;
+    }
+
+    .nav-links a {
+      display: inline-flex;
+      align-items: center;
+      padding: 9px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 760;
+      background: rgba(255, 255, 255, .04);
+    }
+
+    .nav-links a:hover,
+    .nav-links a:focus-visible {
+      color: var(--ink);
+      border-color: rgba(255, 255, 255, .32);
+      background: rgba(255, 255, 255, .08);
+      transform: translateY(-1px);
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1.02fr) minmax(330px, .98fr);
+      gap: clamp(28px, 5vw, 72px);
+      align-items: start;
+    }
+
+    .eyebrow {
+      width: fit-content;
+      margin: 0 0 18px;
+      padding: 8px 10px;
+      border: 1px solid rgba(255, 116, 79, .32);
+      border-radius: 10px;
+      background: rgba(255, 59, 18, .11);
+      color: #ffb19b;
+      font: 760 12px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    h1 {
+      max-width: 780px;
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(54px, 9vw, 112px);
+      line-height: .92;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .lead {
+      max-width: 650px;
+      margin: 24px 0 0;
+      color: var(--muted);
+      font-size: clamp(18px, 2vw, 22px);
+      font-weight: 560;
+      line-height: 1.55;
+      text-wrap: pretty;
+    }
+
+    .hero-actions {
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 30px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 13px 16px;
+      color: var(--ink);
+      background: rgba(255, 255, 255, .06);
+      font-weight: 850;
+    }
+
+    .button:hover,
+    .button:focus-visible {
+      border-color: rgba(255, 255, 255, .32);
+      background: rgba(255, 255, 255, .1);
+      transform: translateY(-2px);
+    }
+
+    .button:active { transform: translateY(0) scale(.99); }
+
+    .button.primary {
+      border-color: rgba(255, 116, 79, .62);
+      background: linear-gradient(180deg, var(--orange-soft), var(--orange));
+      color: white;
+      box-shadow: 0 16px 40px rgba(255, 59, 18, .28);
+    }
+
+    .button.primary:hover,
+    .button.primary:focus-visible {
+      border-color: rgba(255, 184, 164, .78);
+      background: linear-gradient(180deg, #ff8869, var(--orange));
+    }
+
+    .button .mono,
+    .mono {
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .status {
+      gap: 10px;
+      margin-top: 22px;
+      color: var(--green);
+      font: 760 13px/1.4 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .status::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 5px rgba(36, 209, 126, .11);
+    }
+
+    .hero-card {
+      position: relative;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: rgba(255, 255, 255, .065);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 18% 12%, rgba(255, 59, 18, .2), transparent 30%),
+        radial-gradient(circle at 92% 24%, rgba(102, 183, 255, .18), transparent 28%);
+      pointer-events: none;
+    }
+
+    .app-window {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 22px;
+      background: #231d1b;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.1);
+    }
+
+    .window-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 48px;
+      padding: 0 16px;
+      border-bottom: 1px solid rgba(255,255,255,.1);
+      background: rgba(255, 255, 255, .035);
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #ff5a66;
+      box-shadow: 18px 0 #ffcf5a, 36px 0 #25d183;
+    }
+
+    .app-body {
+      padding: 18px;
+    }
+
+    .input-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, .1);
+    }
+
+    .fake-input {
+      min-width: 0;
+      color: rgba(255,255,255,.78);
+      font-weight: 730;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .bolt {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: rgba(255,255,255,.12);
+      color: var(--orange-soft);
+      font-weight: 950;
+    }
+
+    .download-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .download-grid div {
+      min-height: 78px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 16px;
+      color: rgba(255,255,255,.84);
+      font-weight: 820;
+      background: rgba(255,255,255,.06);
+    }
+
+    .download-grid div:first-child {
+      background: linear-gradient(180deg, #2c9bff, #0a72db);
+      color: white;
+    }
+
+    .queue {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .queue-item {
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 18px;
+      background: rgba(255,255,255,.08);
+    }
+
+    .thumb {
+      width: 58px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #181b20, #38231d);
+    }
+
+    .thumb img {
+      width: 34px;
+      height: 34px;
+    }
+
+    .queue-title {
+      margin: 0 0 6px;
+      color: rgba(255,255,255,.9);
+      font-weight: 840;
+      line-height: 1.2;
+    }
+
+    .queue-meta {
+      margin: 0;
+      color: rgba(255,255,255,.52);
+      font: 700 12px/1.3 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+
+    .section {
+      padding-top: 66px;
+      grid-column: 1 / -1;
+    }
+
+    .section h2 {
+      max-width: 720px;
+      margin: 0 0 18px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.02;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .info-card {
+      min-height: 210px;
+      padding: 20px;
+      border: 1px solid var(--line-dark);
+      border-radius: 20px;
+      background: var(--paper);
+      color: var(--dark-ink);
+      box-shadow: 0 18px 46px rgba(0,0,0,.18);
+    }
+
+    .info-card:nth-child(2) { margin-top: 28px; }
+    .info-card:nth-child(3) { margin-top: 8px; }
+
+    .card-icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 28px;
+      border-radius: 13px;
+      background: #1c1f25;
+      color: var(--orange-soft);
+      font-size: 21px;
+      font-weight: 900;
+    }
+
+    .info-card h3 {
+      margin: 0 0 8px;
+      font-size: 21px;
+      line-height: 1.14;
+    }
+
+    .info-card p {
+      margin: 0;
+      color: var(--dark-muted);
+      font-size: 15px;
+      font-weight: 580;
+      line-height: 1.5;
+    }
+
+    .contract {
+      display: grid;
+      grid-template-columns: minmax(0, .9fr) minmax(320px, 1.1fr);
+      gap: 18px;
+      align-items: start;
+      margin-top: 20px;
+    }
+
+    .release-panel,
+    .endpoint-panel {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, .055);
+      box-shadow: 0 16px 48px rgba(0,0,0,.2);
+    }
+
+    .release-panel {
+      padding: 22px;
+    }
+
+    .release-panel h3,
+    .endpoint-panel h3 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      line-height: 1.2;
+    }
+
+    .metric-row {
+      justify-content: space-between;
+      gap: 16px;
+      padding: 13px 0;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-weight: 720;
+    }
+
+    .metric-row:first-of-type { border-top: 0; }
+
+    .metric-row strong {
+      color: var(--ink);
+      text-align: right;
+    }
+
+    .endpoint-panel {
+      overflow: hidden;
+    }
+
+    .endpoint-panel h3 {
+      padding: 20px 20px 0;
+    }
+
+    .endpoint {
+      justify-content: space-between;
+      gap: 16px;
+      padding: 15px 20px;
+      border-top: 1px solid var(--line);
+    }
+
+    .endpoint b {
+      min-width: 138px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    code {
+      color: #d7eaff;
+      font: 680 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, monospace;
+      overflow-wrap: anywhere;
+      text-align: right;
+    }
+
+    .note {
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 620;
+      line-height: 1.5;
+    }
+
+    footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-top: 72px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .footer-links {
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .footer-links a {
+      color: var(--ink);
+      text-decoration-color: rgba(255,255,255,.32);
+      text-underline-offset: 4px;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--orange-soft);
+      outline-offset: 3px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.001ms !important;
+      }
+    }
+
+    @media (max-width: 880px) {
+      .nav,
+      main,
+      .contract,
+      footer {
+        display: block;
+      }
+
+      .nav-links {
+        justify-content: flex-start;
+        margin-top: 16px;
+      }
+
+      .hero-card,
+      .contract > * + * {
+        margin-top: 28px;
+      }
+
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .info-card,
+      .info-card:nth-child(2),
+      .info-card:nth-child(3) {
+        margin-top: 0;
+      }
+
+      footer .footer-links {
+        margin-top: 12px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .wrap {
+        width: min(100% - 24px, 1180px);
+        padding-top: 14px;
+      }
+
+      .brand img {
+        width: 38px;
+        height: 38px;
+      }
+
+      .nav-links a {
+        flex: 1 1 auto;
+        justify-content: center;
+      }
+
+      .hero-actions .button {
+        width: 100%;
+      }
+
+      .hero-card {
+        padding: 10px;
+        border-radius: 22px;
+      }
+
+      .download-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .endpoint {
+        display: grid;
+        gap: 6px;
+      }
+
+      .endpoint b {
+        min-width: 0;
+      }
+
+      code {
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="wrap">
+    <nav class="nav" aria-label="Catapult">
+      <a class="brand" href="./" aria-label="Catapult home">
+        <img src="assets/catapultidle.svg" alt="Catapult app icon">
+        <span>Catapult</span>
+      </a>
+      <div class="nav-links">
+        <a href="https://github.com/HenryTheAddict/Catapult" rel="noreferrer">GitHub</a>
+        <a href="update.json">Manifest</a>
+        <a href="appcast.xml">Appcast</a>
+        <a href="updates/">Legacy</a>
+      </div>
+    </nav>
+
+    <main id="main">
+      <section aria-labelledby="hero-title">
+        <p class="eyebrow">static updater channel</p>
+        <h1 id="hero-title">Download faster. Update cleaner.</h1>
+        <p class="lead">Catapult is a macOS video downloader built around quick saves, clipboard actions, subscriptions, and local-first updates. This page hosts the installer, the .upsweet update package, and the manifests the app reads.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="Catapult.dmg">Download DMG</a>
+          <a class="button" href="Catapult.upsweet">Download <span class="mono">.upsweet</span></a>
+          <a class="button" href="https://github.com/HenryTheAddict/Catapult" rel="noreferrer">View source</a>
+        </div>
+        <p class="status" id="status">reading update.json</p>
+      </section>
+
+      <aside class="hero-card" aria-label="Catapult app preview">
+        <div class="app-window">
+          <div class="window-top"><span class="dot" aria-hidden="true"></span></div>
+          <div class="app-body">
+            <div class="input-row">
+              <div class="fake-input">https://youtube.com/watch?v=catapult</div>
+              <div class="bolt" aria-hidden="true">!</div>
+            </div>
+            <div class="download-grid" aria-hidden="true">
+              <div>Download</div>
+              <div>Audio</div>
+              <div>Cut</div>
+            </div>
+            <div class="queue">
+              <div class="queue-item">
+                <div class="thumb"><img src="assets/downloading.svg" alt=""></div>
+                <div>
+                  <p class="queue-title">Parallel fragments, quieter CPU idle</p>
+                  <p class="queue-meta">active - 4 streams</p>
+                </div>
+              </div>
+              <div class="queue-item">
+                <div class="thumb"><img src="assets/copylink.svg" alt=""></div>
+                <div>
+                  <p class="queue-title">Copy actions from notifications</p>
+                  <p class="queue-meta">ready - under 10 MB</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="section" aria-labelledby="features-title">
+        <h2 id="features-title">A small update page that does the real job.</h2>
+        <div class="cards">
+          <article class="info-card">
+            <div class="card-icon" aria-hidden="true">1</div>
+            <h3>Install with the DMG</h3>
+            <p>Fresh installs use the signed disk image with the Applications shortcut, so new users get the normal Mac install flow.</p>
+          </article>
+          <article class="info-card">
+            <div class="card-icon" aria-hidden="true">2</div>
+            <h3>Update with upsweets</h3>
+            <p>In-app updates keep using the compact .upsweet package. No zips, no mystery folders, no broken paths.</p>
+          </article>
+          <article class="info-card">
+            <div class="card-icon" aria-hidden="true">3</div>
+            <h3>Keep old builds working</h3>
+            <p>The legacy update folder stays available while new app builds read the canonical h3nry.xyz/catapult manifest.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="contract-title">
+        <h2 id="contract-title">Public files</h2>
+        <div class="contract">
+          <div class="release-panel">
+            <h3>Current release</h3>
+            <div class="metric-row"><span>Version</span><strong id="release-version">-</strong></div>
+            <div class="metric-row"><span>Build</span><strong id="release-build">-</strong></div>
+            <div class="metric-row"><span>Minimum macOS</span><strong id="release-system">-</strong></div>
+            <div class="metric-row"><span>DMG size</span><strong id="release-dmg">-</strong></div>
+            <p class="note" id="release-notes">The manifest loads live from update.json when this page is served from the site.</p>
+          </div>
+
+          <div class="endpoint-panel" aria-label="Static update endpoints">
+            <h3>Updater contract</h3>
+            <div class="endpoint">
+              <b>Catapult reads</b>
+              <code>https://h3nry.xyz/catapult/update.json</code>
+            </div>
+            <div class="endpoint">
+              <b>Appcast mirror</b>
+              <code>https://h3nry.xyz/catapult/appcast.xml</code>
+            </div>
+            <div class="endpoint">
+              <b>Legacy alias</b>
+              <code>https://h3nry.xyz/catapult/updates/update.json</code>
+            </div>
+            <div class="endpoint">
+              <b>Updater</b>
+              <code>https://h3nry.xyz/catapult/Catapult.upsweet</code>
+            </div>
+            <div class="endpoint">
+              <b>Installer</b>
+              <code>https://h3nry.xyz/catapult/Catapult.dmg</code>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>Catapult static update channel - h3nry.xyz/catapult</span>
+      <div class="footer-links">
+        <a href="https://github.com/HenryTheAddict/Catapult" rel="noreferrer">GitHub repo</a>
+        <a href="sitemap.xml">Sitemap</a>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    const status = document.getElementById("status");
+    const releaseVersion = document.getElementById("release-version");
+    const releaseBuild = document.getElementById("release-build");
+    const releaseSystem = document.getElementById("release-system");
+    const releaseDmg = document.getElementById("release-dmg");
+    const releaseNotes = document.getElementById("release-notes");
+
+    const formatBytes = (bytes) => {
+      if (!Number.isFinite(bytes)) return "-";
+      const mb = bytes / 1024 / 1024;
+      return `${mb.toFixed(mb >= 10 ? 1 : 2)} MB`;
+    };
+
+    fetch("update.json", { cache: "no-cache" })
+      .then((response) => response.ok ? response.json() : Promise.reject(response))
+      .then((manifest) => {
+        const version = manifest.version || "-";
+        const build = manifest.build || "-";
+        const system = manifest.minimumSystemVersion || "-";
+        const date = manifest.publishedAt ? new Date(manifest.publishedAt).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric"
+        }) : "";
+
+        releaseVersion.textContent = version;
+        releaseBuild.textContent = build;
+        releaseSystem.textContent = system;
+        releaseDmg.textContent = formatBytes(Number(manifest.dmgSizeBytes));
+        releaseNotes.textContent = manifest.notes || "No release notes in the manifest.";
+        status.textContent = `${manifest.name || `Catapult ${version}`}${date ? ` - ${date}` : ""}`;
+      })
+      .catch(() => {
+        releaseVersion.textContent = "unavailable";
+        releaseBuild.textContent = "-";
+        releaseSystem.textContent = "-";
+        releaseDmg.textContent = "-";
+        releaseNotes.textContent = "Could not read update.json. The direct download links still work.";
+        status.textContent = "manifest unavailable";
+        status.style.color = "#ffcf5a";
+      });
+  </script>
+</body>
+</html>

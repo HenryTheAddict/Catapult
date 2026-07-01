@@ -30,7 +30,7 @@
 
     <!--
         Outbound HTTP only — for yt-dlp/ffmpeg installer downloads,
-        SponsorBlock + YouTube RSS feeds, and Sparkle's appcast.
+        SponsorBlock + YouTube RSS feeds, and GitHub release checks.
     -->
     <key>com.apple.security.network.client</key>
     <true/>
