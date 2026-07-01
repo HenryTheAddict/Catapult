@@ -47,29 +47,6 @@ https://git.ffmpeg.org/ffmpeg.git. catapult does not modify ffmpeg.
 
 ---
 
-## swift packages linked into Catapult.app
-
-### Sparkle
-
-- upstream: https://sparkle-project.org / https://github.com/sparkle-project/Sparkle
-- license: **MIT**
-- copyright (c) 2006-2024 Andy Matuschak and the Sparkle Project
-
-> Permission is hereby granted, free of charge, to any person obtaining
-> a copy of this software and associated documentation files (the
-> "Software"), to deal in the Software without restriction, including
-> without limitation the rights to use, copy, modify, merge, publish,
-> distribute, sublicense, and/or sell copies of the Software …
->
-> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
-
-Sparkle bundles a few sublibraries internally, each MIT-compatible:
-bsdiff (BSD-2-Clause), Sparkle's own auto-updater, Ed25519 reference
-implementation (public domain). their notices ship inside
-`Sparkle.framework/Resources` once the framework is linked.
-
----
-
 ## fonts bundled inside Catapult.app
 
 ### Lora

@@ -4,10 +4,10 @@ import AppKit
 
 // MARK: - Channel subscriptions
 //
-// "Watch this channel" for YouTube — stores a channel ID + the last video
-// we've seen, then polls YouTube's public RSS feed at
-// https://www.youtube.com/feeds/videos.xml?channel_id=…
-// on a timer. New uploads are auto-enqueued as regular downloads.
+// "Watch this channel/profile" subscriptions. YouTube uses its public RSS
+// endpoint. TikTok, Instagram, X/Twitter, SoundCloud, Vimeo, and other
+// yt-dlp-supported collection/profile URLs use yt-dlp's flat playlist mode
+// to poll recent items without downloading media.
 //
 // RSS is deliberate: no API key, no quota, no cookies, tiny payload (~8KB
 // per channel). YouTube has published this endpoint forever and it's the
@@ -16,10 +16,31 @@ import AppKit
 // Check cadence is conservative (default 1h). YouTube caches the feed for
 // minutes anyway, so hitting it more often is pointless.
 
+enum SubscriptionSource: String, Codable, Hashable {
+    case youtubeRSS
+    case ytdlpFlat
+
+    var label: String {
+        switch self {
+        case .youtubeRSS: return "youtube rss"
+        case .ytdlpFlat:  return "yt-dlp feed"
+        }
+    }
+
+    var glyph: String {
+        switch self {
+        case .youtubeRSS: return "play.rectangle.fill"
+        case .ytdlpFlat:  return "sparkles.tv"
+        }
+    }
+}
+
 struct ChannelSubscription: Codable, Identifiable, Hashable {
     var id: String { channelID }
     let channelID: String
     var channelTitle: String
+    var source: SubscriptionSource
+    var sourceURL: String?
     /// Video ID of the most recent upload we've already ingested. New videos
     /// are everything listed above this one in the feed.
     var lastSeenVideoID: String?
@@ -35,6 +56,8 @@ struct ChannelSubscription: Codable, Identifiable, Hashable {
 
     init(channelID: String,
          channelTitle: String,
+         source: SubscriptionSource = .youtubeRSS,
+         sourceURL: String? = nil,
          lastSeenVideoID: String? = nil,
          addedAt: Date = Date(),
          downloadMode: DownloadMode = .video,
@@ -42,6 +65,8 @@ struct ChannelSubscription: Codable, Identifiable, Hashable {
          videoQuality: VideoQuality = .best) {
         self.channelID = channelID
         self.channelTitle = channelTitle
+        self.source = source
+        self.sourceURL = sourceURL
         self.lastSeenVideoID = lastSeenVideoID
         self.addedAt = addedAt
         self.downloadMode = downloadMode
@@ -52,13 +77,15 @@ struct ChannelSubscription: Codable, Identifiable, Hashable {
     // Custom decode to keep older persisted subscriptions (without the
     // `videoQuality` field) loading cleanly — they default to `.best`.
     enum CodingKeys: String, CodingKey {
-        case channelID, channelTitle, lastSeenVideoID, addedAt
+        case channelID, channelTitle, source, sourceURL, lastSeenVideoID, addedAt
         case downloadMode, devicePreset, videoQuality
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.channelID = try c.decode(String.self, forKey: .channelID)
         self.channelTitle = try c.decode(String.self, forKey: .channelTitle)
+        self.source = try c.decodeIfPresent(SubscriptionSource.self, forKey: .source) ?? .youtubeRSS
+        self.sourceURL = try c.decodeIfPresent(String.self, forKey: .sourceURL)
         self.lastSeenVideoID = try c.decodeIfPresent(String.self, forKey: .lastSeenVideoID)
         self.addedAt = try c.decode(Date.self, forKey: .addedAt)
         self.downloadMode = try c.decode(DownloadMode.self, forKey: .downloadMode)
@@ -99,6 +126,7 @@ final class SubscriptionManager {
     var lastError: String?
 
     private var timer: Timer?
+    private var shouldRun: Bool { enabled && !subscriptions.isEmpty }
 
     private init() {
         let d = UserDefaults.standard
@@ -114,7 +142,10 @@ final class SubscriptionManager {
     }
 
     func start() {
-        guard enabled else { return }
+        guard shouldRun else {
+            stop()
+            return
+        }
         restartTimer()
         // Fire one check shortly after launch so the user sees the list
         // refresh without waiting an hour.
@@ -128,12 +159,12 @@ final class SubscriptionManager {
 
     private func restartTimer() {
         stop()
-        // Tick every minute; `checkNow(force: false)` decides whether enough
-        // time has passed. Cheaper than one long Timer that gets out of sync
-        // after a sleep/wake cycle.
-        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        guard shouldRun else { return }
+        let interval = TimeInterval(max(15, pollMinutes) * 60)
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.checkNow(force: false) }
         }
+        t.tolerance = min(interval * 0.15, 90)
         RunLoop.main.add(t, forMode: .common)
         self.timer = t
     }
@@ -141,7 +172,10 @@ final class SubscriptionManager {
     // MARK: - Add / remove
 
     @discardableResult
-    func add(channelID: String, title: String,
+    func add(channelID: String,
+             title: String,
+             source: SubscriptionSource = .youtubeRSS,
+             sourceURL: String? = nil,
              downloadMode: DownloadMode = .video,
              devicePreset: DevicePreset = .none,
              videoQuality: VideoQuality = .best) -> ChannelSubscription {
@@ -150,10 +184,13 @@ final class SubscriptionManager {
         }
         let sub = ChannelSubscription(channelID: channelID,
                                       channelTitle: title,
+                                      source: source,
+                                      sourceURL: sourceURL,
                                       downloadMode: downloadMode,
                                       devicePreset: devicePreset,
                                       videoQuality: videoQuality)
         subscriptions.append(sub)
+        if enabled { restartTimer() }
         // On first subscribe, enqueue every video in the RSS feed (~15
         // most recent uploads). Subsequent polls only enqueue genuinely new
         // uploads relative to the cursor we set at the end of the backfill.
@@ -163,6 +200,7 @@ final class SubscriptionManager {
 
     func remove(id: String) {
         subscriptions.removeAll { $0.channelID == id }
+        if subscriptions.isEmpty { stop() }
     }
 
     func update(_ sub: ChannelSubscription) {
@@ -179,25 +217,53 @@ final class SubscriptionManager {
     //   https://www.youtube.com/c/CustomName       (scraped)
     //   a bare channel ID starting with UC         (used as-is)
 
-    static func resolveChannel(from input: String) async -> (id: String, title: String)? {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    struct ResolvedSubscription {
+        let id: String
+        let title: String
+        let source: SubscriptionSource
+        let sourceURL: String?
+    }
+
+    static func resolveChannel(from input: String) async -> ResolvedSubscription? {
+        var trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("@") {
+            trimmed = "https://www.tiktok.com/\(trimmed)"
+        } else if !trimmed.contains("://"),
+                  trimmed.contains(".") || trimmed.hasPrefix("www.") {
+            trimmed = "https://\(trimmed)"
+        }
         if trimmed.hasPrefix("UC"), trimmed.count >= 20, !trimmed.contains("/") {
             // Looks like a raw channel ID. Fetch its feed to grab the title.
             if let title = await fetchChannelTitle(channelID: trimmed) {
-                return (trimmed, title)
+                return ResolvedSubscription(id: trimmed, title: title, source: .youtubeRSS, sourceURL: nil)
             }
-            return (trimmed, trimmed)
+            return ResolvedSubscription(id: trimmed, title: trimmed, source: .youtubeRSS, sourceURL: nil)
         }
         guard let url = URL(string: trimmed) else { return nil }
         // Direct /channel/UC… URLs: grab the ID, fetch feed for the title.
         if let id = extractChannelID(fromDirect: url) {
             let title = (await fetchChannelTitle(channelID: id)) ?? id
-            return (id, title)
+            return ResolvedSubscription(id: id, title: title, source: .youtubeRSS, sourceURL: nil)
+        }
+        if !isYouTubeURL(url) {
+            let normalized = normalizedCollectionURL(url)
+            let site = SupportedSite.match(url: normalized)
+            return ResolvedSubscription(
+                id: "\(site.rawValue):\(normalized)",
+                title: titleForCollection(url: url, site: site),
+                source: .ytdlpFlat,
+                sourceURL: normalized
+            )
         }
         // Handle / custom / user URLs: scrape the channel page for the
         // canonical externalId metadata. YouTube still embeds it on every
         // channel HTML page.
         return await scrapeChannel(url: url)
+    }
+
+    private static func isYouTubeURL(_ url: URL) -> Bool {
+        let host = (url.host ?? "").lowercased()
+        return host.contains("youtube.com") || host == "youtu.be"
     }
 
     private static func extractChannelID(fromDirect url: URL) -> String? {
@@ -225,7 +291,7 @@ final class SubscriptionManager {
         return nil
     }
 
-    private static func scrapeChannel(url: URL) async -> (id: String, title: String)? {
+    private static func scrapeChannel(url: URL) async -> ResolvedSubscription? {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             guard let html = String(data: data, encoding: .utf8) else { return nil }
@@ -243,10 +309,28 @@ final class SubscriptionManager {
                tm.numberOfRanges >= 2 {
                 title = ns.substring(with: tm.range(at: 1))
             }
-            return (id, title)
+            return ResolvedSubscription(id: id, title: title, source: .youtubeRSS, sourceURL: nil)
         } catch {
             return nil
         }
+    }
+
+    private static func normalizedCollectionURL(_ url: URL) -> String {
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        comps?.fragment = nil
+        return comps?.url?.absoluteString ?? url.absoluteString
+    }
+
+    private static func titleForCollection(url: URL, site: SupportedSite) -> String {
+        let path = url.pathComponents
+            .filter { $0 != "/" }
+            .last?
+            .removingPercentEncoding ?? (url.host ?? site.notificationName)
+        let cleaned = path.isEmpty ? (url.host ?? site.notificationName) : path
+        if cleaned.hasPrefix("@") {
+            return "\(site.notificationName) \(cleaned)"
+        }
+        return "\(site.notificationName) \(cleaned)"
     }
 
     /// Initial-subscribe backfill: enqueues every entry in the feed (oldest
@@ -254,10 +338,9 @@ final class SubscriptionManager {
     /// cursor to the newest video. The RSS feed only exposes ~15 entries —
     /// this is "everything reasonably recent", not the full channel history.
     private func backfill(for channelID: String) async {
-        guard let feedURL = feedURL(for: channelID) else { return }
-        let entries = await fetchEntries(feedURL: feedURL)
-        guard !entries.isEmpty else { return }
         guard let idx = subscriptions.firstIndex(where: { $0.channelID == channelID }) else { return }
+        let entries = await fetchEntries(for: subscriptions[idx])
+        guard !entries.isEmpty else { return }
         let sub = subscriptions[idx]
         let overrides = buildOverrides(for: sub)
         for e in entries.reversed() {
@@ -298,6 +381,7 @@ final class SubscriptionManager {
             }
         }
         guard enabled else { return 0 }
+        guard !subscriptions.isEmpty else { return 0 }
         var newCount = 0
         for sub in subscriptions {
             newCount += await checkOne(subscriptionID: sub.channelID)
@@ -309,11 +393,9 @@ final class SubscriptionManager {
 
     /// Returns how many new videos were enqueued for this subscription.
     private func checkOne(subscriptionID: String) async -> Int {
-        guard let idx = subscriptions.firstIndex(where: { $0.channelID == subscriptionID }),
-              let feedURL = feedURL(for: subscriptionID)
-        else { return 0 }
+        guard let idx = subscriptions.firstIndex(where: { $0.channelID == subscriptionID }) else { return 0 }
         let sub = subscriptions[idx]
-        let entries = await fetchEntries(feedURL: feedURL)
+        let entries = await fetchEntries(for: sub)
         guard !entries.isEmpty else { return 0 }
 
         // Everything above the last-seen cursor is "new". If there's no
@@ -362,16 +444,73 @@ final class SubscriptionManager {
     fileprivate struct RSSEntry {
         let videoID: String
         let title: String
-        var watchURL: String { "https://www.youtube.com/watch?v=\(videoID)" }
+        let url: String?
+        var watchURL: String { url ?? "https://www.youtube.com/watch?v=\(videoID)" }
     }
 
-    private func fetchEntries(feedURL: URL) async -> [RSSEntry] {
+    private func fetchEntries(for sub: ChannelSubscription) async -> [RSSEntry] {
+        switch sub.source {
+        case .youtubeRSS:
+            guard let feedURL = feedURL(for: sub.channelID) else { return [] }
+            return await fetchRSSEntries(feedURL: feedURL)
+        case .ytdlpFlat:
+            guard let sourceURL = sub.sourceURL else { return [] }
+            return await fetchFlatEntries(sourceURL: sourceURL)
+        }
+    }
+
+    private func fetchRSSEntries(feedURL: URL) async -> [RSSEntry] {
         do {
             let (data, _) = try await URLSession.shared.data(from: feedURL)
             guard let s = String(data: data, encoding: .utf8) else { return [] }
             return Self.parseEntries(xml: s)
         } catch {
             self.lastError = error.localizedDescription
+            return []
+        }
+    }
+
+    private func fetchFlatEntries(sourceURL: String) async -> [RSSEntry] {
+        let ytDlp = DependencyManager.shared.ytDlpPath
+        guard FileManager.default.fileExists(atPath: ytDlp.path) else {
+            lastError = "yt-dlp is not installed yet"
+            return []
+        }
+        let result = await Task.detached(priority: .utility) { () -> Result<String, Error> in
+            let task = Process()
+            task.executableURL = ytDlp
+            task.arguments = [
+                "--flat-playlist",
+                "--dump-json",
+                "--playlist-end", "15",
+                "--no-warnings",
+                sourceURL
+            ]
+            let pipe = Pipe()
+            let err = Pipe()
+            task.standardOutput = pipe
+            task.standardError = err
+            do {
+                try task.run()
+            } catch {
+                return .failure(error)
+            }
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if task.terminationStatus != 0 {
+                let errData = err.fileHandleForReading.readDataToEndOfFile()
+                let message = String(data: errData, encoding: .utf8) ?? "yt-dlp feed check failed"
+                return .failure(NSError(domain: "Catapult.SubscriptionManager",
+                                        code: Int(task.terminationStatus),
+                                        userInfo: [NSLocalizedDescriptionKey: message]))
+            }
+            return .success(String(data: data, encoding: .utf8) ?? "")
+        }.value
+        switch result {
+        case .success(let output):
+            return Self.parseFlatEntries(output: output)
+        case .failure(let error):
+            lastError = error.localizedDescription
             return []
         }
     }
@@ -390,9 +529,26 @@ final class SubscriptionManager {
             }
             let title = extract(regex: #"<title>([^<]+)</title>"#, in: part) ?? videoID
             entries.append(RSSEntry(videoID: videoID,
-                                    title: decodeXMLEntities(title)))
+                                    title: decodeXMLEntities(title),
+                                    url: nil))
         }
         return entries
+    }
+
+    fileprivate static func parseFlatEntries(output: String) -> [RSSEntry] {
+        output.split(separator: "\n").compactMap { line in
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            let url = object["webpage_url"] as? String
+                ?? object["url"] as? String
+                ?? object["original_url"] as? String
+            let rawID = object["id"] as? String
+            let stableID = url ?? rawID
+            guard let stableID else { return nil }
+            let title = object["title"] as? String ?? stableID
+            return RSSEntry(videoID: stableID, title: title, url: url)
+        }
     }
 
     private static func extract(regex: String, in s: String) -> String? {

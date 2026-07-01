@@ -2,13 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!--
-		Most keys come straight from Xcode's auto-generated Info.plist
-		via $(MACRO) expansion. We only opted into a hand-written file
-		to add Sparkle's three custom keys, which `INFOPLIST_KEY_*`
-		can't carry through the auto-generator.
-	-->
-
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleExecutable</key>
@@ -40,24 +33,8 @@
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
 
-	<!-- ============== Sparkle ============== -->
-	<!--
-		Auto-update feed lives on the gh-pages branch of the repo;
-		release.yml regenerates it after each tagged release.
-	-->
-	<key>SUFeedURL</key>
-	<string>https://henrytheaddict.github.io/Catapult/appcast.xml</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Catapocket lets your phone send video links to this Mac over your local Wi-Fi network.</string>
 
-	<!--
-		Ed25519 public key matching the private key stored in your
-		macOS Keychain (and exported as the SPARKLE_ED_PRIVATE_KEY
-		repo secret for CI signing).
-	-->
-	<key>SUPublicEDKey</key>
-	<string>ZR6u0B2BEGOd8xxRcSDm8VCiYFkHMuQjXK/mD2Wn0OI=</string>
-
-	<!-- Sparkle 2 needs the installer launcher service registered. -->
-	<key>SUEnableInstallerLauncherService</key>
-	<true/>
 </dict>
 </plist>

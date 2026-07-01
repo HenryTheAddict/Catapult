@@ -1,43 +1,418 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import CoreImage.CIFilterBuiltins
 
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(DependencyManager.self) private var dependencies
     @Environment(DownloadManager.self) private var downloads
+    @State private var selectedTab: SettingsTab = .general
+    @State private var tabRailPage = 0
+
+    private let tabRailPageSize = 8
 
     var body: some View {
-        TabView {
-            GeneralSettingsTab()
-                .tabItem { Label("General", systemImage: "gearshape") }
-            QualitySettingsTab()
-                .tabItem { Label("Quality", systemImage: "sparkles") }
-            NetworkSettingsTab()
-                .tabItem { Label("Network", systemImage: "globe") }
-            SponsorBlockTab()
-                .tabItem { Label("SponsorBlock", systemImage: "rectangle.on.rectangle.slash") }
-            SitesTab()
-                .tabItem { Label("Sites", systemImage: "globe.americas.fill") }
-            SubscriptionsTab()
-                .tabItem { Label("Subscribe", systemImage: "antenna.radiowaves.left.and.right") }
-            DevicePresetsTab()
-                .tabItem { Label("Devices", systemImage: "gamecontroller") }
-            TerminalTab()
-                .tabItem { Label("Terminal", systemImage: "terminal") }
-            AdvancedSettingsTab()
-                .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
-            DependenciesTab()
-                .tabItem { Label("Dependencies", systemImage: "shippingbox") }
-            HistoryTab()
-                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
-            AboutTab()
-                .tabItem { Label("About", systemImage: "info.circle") }
+        VStack(spacing: 0) {
+            settingsTabRail
+            Divider().opacity(0.5)
+            selectedTabView
+                .id(selectedTab)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .animation(H3.appleDrift, value: selectedTab)
         }
-        .frame(minWidth: 560, idealWidth: 620, minHeight: 500, idealHeight: 560)
+        .frame(minWidth: 680, idealWidth: 760, minHeight: 560, idealHeight: 650)
+        .background(H3.ink50)
+        // h3 transparent title bar so settings chrome matches onboarding.
+        .h3WindowChrome()
         .environment(settings)
         .environment(dependencies)
         .environment(downloads)
+    }
+
+    private var settingsTabRail: some View {
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Color.clear
+                        .frame(width: 72)
+                    SettingsRailArrow(systemName: "chevron.left",
+                                      isEnabled: tabRailPage > 0) {
+                        scrollTabRail(to: tabRailPage - 1, proxy: proxy)
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(SettingsTab.allCases) { tab in
+                                SettingsTabButton(tab: tab,
+                                                  isSelected: selectedTab == tab) {
+                                    withAnimation(H3.appleSnap) {
+                                        selectedTab = tab
+                                        tabRailPage = pageIndex(for: tab)
+                                        proxy.scrollTo(tab.id, anchor: .center)
+                                    }
+                                }
+                                .id(tab.id)
+                            }
+                        }
+                        .padding(.top, 9)
+                        .padding(.bottom, 6)
+                    }
+                    SettingsRailArrow(systemName: "chevron.right",
+                                      isEnabled: tabRailPage < tabRailPageCount - 1) {
+                        scrollTabRail(to: tabRailPage + 1, proxy: proxy)
+                    }
+                }
+                .padding(.trailing, 18)
+
+                SettingsRailPageIndicator(pageCount: tabRailPageCount,
+                                          currentPage: tabRailPage) { page in
+                    scrollTabRail(to: page, proxy: proxy)
+                }
+                .padding(.bottom, 7)
+            }
+            .onChange(of: selectedTab) { _, tab in
+                withAnimation(H3.appleSnap) {
+                    tabRailPage = pageIndex(for: tab)
+                    proxy.scrollTo(tab.id, anchor: .center)
+                }
+            }
+            .background(
+                SettingsRailScrollMonitor { direction in
+                    scrollTabRail(to: tabRailPage + direction, proxy: proxy)
+                }
+            )
+        }
+        .frame(height: 82)
+        .background(settingsRailBackground)
+        .overlay(alignment: .bottom) {
+            LinearGradient(colors: [.clear, H3.ink50.opacity(0.78)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: 12)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var tabRailPageCount: Int {
+        max(1, (SettingsTab.allCases.count + tabRailPageSize - 1) / tabRailPageSize)
+    }
+
+    private func pageIndex(for tab: SettingsTab) -> Int {
+        guard let index = SettingsTab.allCases.firstIndex(of: tab) else { return 0 }
+        return min(tabRailPageCount - 1, index / tabRailPageSize)
+    }
+
+    private func firstTab(on page: Int) -> SettingsTab {
+        let clampedPage = min(max(page, 0), tabRailPageCount - 1)
+        let index = min(clampedPage * tabRailPageSize, SettingsTab.allCases.count - 1)
+        return SettingsTab.allCases[index]
+    }
+
+    private func scrollTabRail(to page: Int, proxy: ScrollViewProxy) {
+        let clampedPage = min(max(page, 0), tabRailPageCount - 1)
+        withAnimation(H3.appleSnap) {
+            tabRailPage = clampedPage
+            proxy.scrollTo(firstTab(on: clampedPage).id, anchor: .leading)
+        }
+    }
+
+    private var settingsRailBackground: some View {
+        ZStack {
+            LinearGradient(colors: [
+                H3.cardFill.opacity(0.82),
+                H3.ink50.opacity(0.95)
+            ], startPoint: .top, endPoint: .bottom)
+            H3.gradSky.opacity(0.10)
+            Rectangle().fill(.ultraThinMaterial)
+        }
+        .ignoresSafeArea(edges: .top)
+    }
+
+    @ViewBuilder
+    private var selectedTabView: some View {
+        switch selectedTab {
+        case .general: GeneralSettingsTab()
+        case .quality: QualitySettingsTab()
+        case .network: NetworkSettingsTab()
+        case .sponsorBlock: SponsorBlockTab()
+        case .sites: SitesTab()
+        case .pocket: PocketSettingsTab()
+        case .subscriptions: SubscriptionsTab()
+        case .devices: DevicePresetsTab()
+        case .terminal: TerminalTab()
+        case .advanced: AdvancedSettingsTab()
+        case .dependencies: DependenciesTab()
+        case .history: HistoryTab()
+        case .about: AboutTab()
+        }
+    }
+}
+
+private enum SettingsTab: String, CaseIterable, Identifiable {
+    case general
+    case quality
+    case network
+    case sponsorBlock
+    case sites
+    case pocket
+    case subscriptions
+    case devices
+    case terminal
+    case advanced
+    case dependencies
+    case history
+    case about
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .general: return "General"
+        case .quality: return "Quality"
+        case .network: return "Network"
+        case .sponsorBlock: return "SponsorBlock"
+        case .sites: return "Sites"
+        case .pocket: return "Catapocket"
+        case .subscriptions: return "Subscribe"
+        case .devices: return "Devices"
+        case .terminal: return "Terminal"
+        case .advanced: return "Advanced"
+        case .dependencies: return "Dependencies"
+        case .history: return "History"
+        case .about: return "About"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .quality: return "sparkles"
+        case .network: return "globe"
+        case .sponsorBlock: return "rectangle.on.rectangle.slash"
+        case .sites: return "globe.americas.fill"
+        case .pocket: return "iphone.gen3.radiowaves.left.and.right"
+        case .subscriptions: return "antenna.radiowaves.left.and.right"
+        case .devices: return "gamecontroller"
+        case .terminal: return "terminal"
+        case .advanced: return "slider.horizontal.3"
+        case .dependencies: return "shippingbox"
+        case .history: return "clock.arrow.circlepath"
+        case .about: return "info.circle"
+        }
+    }
+
+    var iconPointSize: CGFloat {
+        switch self {
+        case .sponsorBlock, .advanced:
+            return 18
+        case .dependencies, .devices, .pocket:
+            return 19
+        default:
+            return 20
+        }
+    }
+}
+
+private struct SettingsTabButton: View {
+    let tab: SettingsTab
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+    private let slotWidth: CGFloat = 92
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: tab.icon)
+                    .font(.system(size: tab.iconPointSize, weight: isSelected ? .bold : .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 22, height: 20)
+                Text(tab.label)
+                    .font(H3.body(size: 10.5, weight: isSelected ? .semibold : .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.66)
+            }
+            .foregroundStyle(isSelected ? H3.ink900 : H3.ink500)
+            .padding(.horizontal, 7)
+            .frame(width: slotWidth, height: 54)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isSelected ? H3.cardFill.opacity(0.86)
+                                     : (hovering ? H3.cardFill.opacity(0.42) : .clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(isSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.0),
+                            lineWidth: 1)
+            )
+            .shadow(color: H3.shadowDrop.opacity(isSelected ? 0.13 : 0),
+                    radius: 14, y: 8)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .help(tab.label)
+        .accessibilityLabel(tab.label)
+        .onHover { hovering = $0 }
+        .animation(H3.appleSnap, value: hovering)
+        .animation(H3.appleSnap, value: isSelected)
+    }
+}
+
+private struct SettingsRailArrow: View {
+    let systemName: String
+    let isEnabled: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(isEnabled ? H3.ink700 : H3.ink300)
+                .frame(width: 34, height: 42)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(hovering && isEnabled ? H3.cardFill.opacity(0.92) : H3.cardFill.opacity(0.62))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(H3.cardStroke, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .help(systemName == "chevron.left" ? "Previous settings section" : "Next settings section")
+        .onHover { hovering = $0 }
+        .animation(H3.appleSnap, value: hovering)
+        .animation(H3.appleSnap, value: isEnabled)
+    }
+}
+
+private struct SettingsRailPageIndicator: View {
+    let pageCount: Int
+    let currentPage: Int
+    let selectPage: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<pageCount, id: \.self) { page in
+                Button {
+                    selectPage(page)
+                } label: {
+                    Capsule(style: .continuous)
+                        .fill(page == currentPage ? H3.blue400 : H3.ink200)
+                        .frame(width: page == currentPage ? 18 : 6, height: 6)
+                }
+                .buttonStyle(.plain)
+                .help("Settings page \(page + 1) of \(pageCount)")
+            }
+        }
+        .animation(H3.appleSnap, value: currentPage)
+        .accessibilityLabel("Settings section pages")
+    }
+}
+
+private struct SettingsRailScrollMonitor: NSViewRepresentable {
+    let onPage: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPage: onPage)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.postsFrameChangedNotifications = true
+        context.coordinator.view = view
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onPage = onPage
+        context.coordinator.view = nsView
+        context.coordinator.installMonitor()
+    }
+
+    final class Coordinator {
+        var onPage: (Int) -> Void
+        weak var view: NSView?
+        private var monitor: Any?
+        private var lastPageAt = Date.distantPast
+        private var accumulatedDelta: CGFloat = 0
+
+        init(onPage: @escaping (Int) -> Void) {
+            self.onPage = onPage
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let view,
+                  let window = view.window,
+                  event.window === window else { return event }
+
+            let point = view.convert(event.locationInWindow, from: nil)
+            guard view.bounds.contains(point) else { return event }
+
+            let verticalDelta = event.scrollingDeltaY
+            let horizontalDelta = event.scrollingDeltaX
+            guard abs(verticalDelta) >= abs(horizontalDelta),
+                  abs(verticalDelta) > 0.05 else { return event }
+
+            accumulatedDelta += verticalDelta
+            let threshold: CGFloat = event.hasPreciseScrollingDeltas ? 18 : 0.8
+            let now = Date()
+            guard abs(accumulatedDelta) >= threshold,
+                  now.timeIntervalSince(lastPageAt) > 0.28 else { return nil }
+
+            let direction = accumulatedDelta < 0 ? 1 : -1
+            accumulatedDelta = 0
+            lastPageAt = now
+            onPage(direction)
+            return nil
+        }
+    }
+}
+
+private struct SettingsPage<Content: View>: View {
+    let title: String
+    let subtitle: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView(showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(H3.display(size: 24, weight: .medium))
+                        .foregroundStyle(H3.ink900)
+                    Text(subtitle)
+                        .font(H3.body(size: 12))
+                        .foregroundStyle(H3.ink500)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 4)
+                .padding(.top, 2)
+
+                content()
+            }
+            .frame(maxWidth: 1040, alignment: .leading)
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .padding(.bottom, 24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(H3.ink50)
     }
 }
 
@@ -48,96 +423,205 @@ private struct GeneralSettingsTab: View {
 
     var body: some View {
         @Bindable var s = settings
-        Form {
-            Section("Downloads") {
-                HStack {
-                    Text("Save to:")
-                    Spacer()
-                    Text((settings.downloadFolderPath as NSString).abbreviatingWithTildeInPath)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button("Choose…") { chooseFolder() }
-                    Button {
-                        NSWorkspace.shared.open(settings.downloadFolderURL)
-                    } label: {
-                        Image(systemName: "arrow.up.right.square")
+        SettingsPage(title: "general",
+                     subtitle: "downloads, speed, clipboard behavior, and the little bits you reach for most.") {
+                GeneralSettingsCard(title: "Downloads") {
+                    HStack(spacing: 12) {
+                        SettingsGlyph(systemName: "folder")
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Save to")
+                                .font(H3.body(size: 13, weight: .semibold))
+                                .foregroundStyle(H3.ink900)
+                            Text((settings.downloadFolderPath as NSString).abbreviatingWithTildeInPath)
+                                .font(H3.mono(size: 12))
+                                .foregroundStyle(H3.ink500)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 12)
+                        SettingsMiniButton(title: "Choose", systemName: "folder.badge.gearshape") {
+                            chooseFolder()
+                        }
+                        SettingsIconButton(systemName: "arrow.up.right.square",
+                                           help: "Open folder") {
+                            NSWorkspace.shared.open(settings.downloadFolderURL)
+                        }
                     }
-                    .help("Open folder")
+
+                    SettingsDivider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .center, spacing: 12) {
+                            SettingsGlyph(systemName: "textformat")
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Filename")
+                                    .font(H3.body(size: 13, weight: .semibold))
+                                    .foregroundStyle(H3.ink900)
+                                Text(settings.filenamePreset.hint)
+                                    .font(H3.body(size: 11))
+                                    .foregroundStyle(H3.ink500)
+                            }
+                            Spacer(minLength: 12)
+                            Picker("", selection: $s.filenamePreset) {
+                                ForEach(FilenamePreset.allCases) { p in
+                                    Text(p.label).tag(p)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 360)
+                        }
+
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("Template")
+                                .font(H3.body(size: 12, weight: .semibold))
+                                .foregroundStyle(H3.ink500)
+                                .frame(width: 74, alignment: .leading)
+                                .padding(.top, 7)
+                            if settings.filenamePreset == .custom {
+                                TextField("", text: $s.filenameTemplate,
+                                          prompt: Text("%(title)s [%(id)s].%(ext)s"))
+                                    .textFieldStyle(.plain)
+                                    .font(H3.mono(size: 12))
+                                    .foregroundStyle(H3.ink900)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .background(templateFieldBackground)
+                            } else {
+                                Text(settings.filenameTemplate)
+                                    .font(H3.mono(size: 12))
+                                    .foregroundStyle(H3.ink700)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .background(templateFieldBackground)
+                            }
+                        }
+                        Text("Tokens: %(title)s, %(id)s, %(uploader)s, %(height)s, %(vcodec)s, %(upload_date)s.")
+                            .font(H3.body(size: 10))
+                            .foregroundStyle(H3.ink300)
+                    }
                 }
-                Picker("Filename:", selection: $s.filenamePreset) {
-                    ForEach(FilenamePreset.allCases) { p in
-                        Text(p.label).tag(p)
+
+                GeneralSettingsCard(title: "Speed") {
+                    SettingsNumberRow(systemName: "square.stack.3d.down.right",
+                                      title: "Simultaneous downloads",
+                                      detail: "Separate links Catapult can run at the same time.",
+                                      value: $s.maxConcurrent,
+                                      range: 1...6)
+                    SettingsDivider()
+                    SettingsNumberRow(systemName: "bolt.horizontal.circle",
+                                      title: "Parallel fragments",
+                                      detail: "Splits supported streams into multiple fragment requests.",
+                                      value: $s.concurrentFragments,
+                                      range: 1...16)
+                }
+
+                GeneralSettingsCard(title: "Quick Actions") {
+                    SettingsNumberRow(systemName: "gauge.with.dots.needle.bottom.50percent",
+                                      title: "Size limit action",
+                                      detail: "Used by the “<N MB” quick download preset.",
+                                      value: $s.quickSizeLimitMB,
+                                      range: 5...500,
+                                      step: 5,
+                                      suffix: " MB")
+                    SettingsDivider()
+                    SettingsToggleRow(systemName: "play.rectangle.on.rectangle",
+                                      title: "Prefer QuickTime-compatible codecs",
+                                      detail: "Uses H.264 / AAC for MP4. Slightly slower, much friendlier.",
+                                      isOn: $s.preferCompatibleCodecs)
+                }
+
+                GeneralSettingsCard(title: "Behavior") {
+                    SettingsToggleRow(systemName: "doc.on.clipboard",
+                                      title: "Watch clipboard for media links",
+                                      isOn: $s.clipboardMonitoring)
+                    SettingsDivider()
+                    SettingsToggleRow(systemName: "bolt.fill",
+                                      title: "Auto-start download on detect",
+                                      isOn: $s.autoStartDownload,
+                                      isDisabled: !settings.clipboardMonitoring)
+                    SettingsDivider()
+                    SettingsToggleRow(systemName: "bell.badge",
+                                      title: "Show notifications",
+                                      isOn: $s.showNotifications)
+                    SettingsDivider()
+                    SettingsToggleRow(systemName: "speaker.wave.2",
+                                      title: "Play sound with notifications",
+                                      isOn: $s.notificationSound,
+                                      isDisabled: !settings.showNotifications)
+                    SettingsDivider()
+                    SettingsToggleRow(systemName: "folder",
+                                      title: "Reveal in Finder when finished",
+                                      isOn: $s.openFolderOnFinish)
+                    SettingsDivider()
+                    SettingsToggleRow(systemName: "doc.on.doc",
+                                      title: "Copy file after download",
+                                      detail: "Puts the finished file on the clipboard.",
+                                      isOn: $s.copyFileAfterDownload)
+                }
+
+                GeneralSettingsCard(title: "Appearance") {
+                    HStack(spacing: 12) {
+                        SettingsGlyph(systemName: "paintbrush")
+                        Text("Theme")
+                            .font(H3.body(size: 13, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                        Spacer()
+                        Picker("", selection: $s.appearance) {
+                            ForEach(AppearanceOverride.allCases) { a in
+                                Text(a.label).tag(a)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 280)
                     }
                 }
-                Text(settings.filenamePreset.hint)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("Template:", text: $s.filenameTemplate)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(settings.filenamePreset != .custom)
-                    .opacity(settings.filenamePreset == .custom ? 1 : 0.55)
-                Text("yt-dlp tokens: %(title)s, %(id)s, %(uploader)s, %(height)s, %(vcodec)s, %(upload_date)s.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            Section("Quick actions") {
-                Stepper("Size limit for “<N MB” action: \(settings.quickSizeLimitMB) MB",
-                        value: $s.quickSizeLimitMB, in: 5...500, step: 5)
-                Toggle("Prefer QuickTime-compatible codecs (H.264 / AAC for .mp4)",
-                       isOn: $s.preferCompatibleCodecs)
-                Text("Avoids AV1/VP9 video that QuickTime refuses to open. Slightly slower, but plays everywhere.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            Section("Behavior") {
-                Toggle("Watch clipboard for YouTube links", isOn: $s.clipboardMonitoring)
-                Toggle("Auto-start download on detect", isOn: $s.autoStartDownload)
-                    .disabled(!settings.clipboardMonitoring)
-                Toggle("Show notifications", isOn: $s.showNotifications)
-                Toggle("Play sound with notifications", isOn: $s.notificationSound)
-                    .disabled(!settings.showNotifications)
-                Toggle("Reveal in Finder when finished", isOn: $s.openFolderOnFinish)
-            }
-            Section("Appearance") {
-                Picker("Theme:", selection: $s.appearance) {
-                    ForEach(AppearanceOverride.allCases) { a in
-                        Text(a.label).tag(a)
+
+                GeneralSettingsCard(title: "History & Updates") {
+                    SettingsNumberRow(systemName: "clock.arrow.circlepath",
+                                      title: "Downloads kept in history",
+                                      value: $s.historyLimit,
+                                      range: 10...500,
+                                      step: 10)
+                    SettingsDivider()
+                    SettingsToggleRow(systemName: "arrow.down.app",
+                                      title: "Automatically check for app updates",
+                                      isOn: $s.autoCheckForUpdates)
+                        .onChange(of: settings.autoCheckForUpdates) { _, new in
+                            UpdateController.shared.automaticallyChecksForUpdates = new
+                        }
+                    SettingsDivider()
+                    HStack(spacing: 12) {
+                        SettingsGlyph(systemName: "info.circle")
+                        Text("App updates")
+                            .font(H3.body(size: 12))
+                            .foregroundStyle(H3.ink500)
+                        Spacer()
+                        SettingsMiniButton(title: "Check now", systemName: "arrow.clockwise") {
+                            UpdateController.shared.checkForUpdates()
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
-            }
-            Section("Concurrency & history") {
-                Stepper("Simultaneous downloads: \(settings.maxConcurrent)",
-                        value: $s.maxConcurrent, in: 1...6)
-                Stepper("Keep last \(settings.historyLimit) downloads in the list",
-                        value: $s.historyLimit, in: 10...500, step: 10)
-            }
-            Section("Updates") {
-                Toggle("Automatically check for app updates", isOn: $s.autoCheckForUpdates)
-                    .onChange(of: settings.autoCheckForUpdates) { _, new in
-                        UpdateController.shared.automaticallyChecksForUpdates = new
-                    }
-                HStack {
-                    Text("Catapult \(AppVersion.short) (build \(AppVersion.build))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Check now") {
-                        UpdateController.shared.checkForUpdates()
-                    }
-                    .disabled(!UpdateController.shared.canCheckForUpdates)
-                }
-            }
-            Section {
-                Button("Replay onboarding") {
+
+                SettingsMiniButton(title: "Replay onboarding", systemName: "sparkles") {
                     settings.hasCompletedOnboarding = false
                     OnboardingLauncher.present()
                 }
-            }
+                .padding(.leading, 4)
         }
-        .formStyle(.grouped)
+    }
+
+    private var templateFieldBackground: some View {
+        RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+            .fill(H3.ink50)
+            .overlay(
+                RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                    .stroke(H3.cardStroke, lineWidth: 1)
+            )
     }
 
     private func chooseFolder() {
@@ -152,53 +636,538 @@ private struct GeneralSettingsTab: View {
     }
 }
 
+// MARK: - Catapocket
+
+private struct PocketSettingsTab: View {
+    @Environment(AppSettings.self) private var settings
+    @State private var pocket = PocketServer.shared
+
+    var body: some View {
+        @Bindable var s = settings
+        SettingsPage(title: "catapocket",
+                     subtitle: "iPhone-first local pairing for saving phone links to this Mac over Wi-Fi, with offline sync ready for the iOS app.") {
+            GeneralSettingsCard(title: "Remote") {
+                SettingsToggleRow(systemName: "iphone.gen3.radiowaves.left.and.right",
+                                  title: "Enable Catapocket remote",
+                                  detail: pocket.statusLine,
+                                  isOn: $s.pocketRemoteEnabled)
+                SettingsDivider()
+                SettingsNumberRow(systemName: "network",
+                                  title: "Port",
+                                  detail: "Keep this stable if you save Catapocket to your phone home screen.",
+                                  value: $s.pocketRemotePort,
+                                  range: 1024...65535)
+                SettingsDivider()
+                HStack(spacing: 12) {
+                    SettingsGlyph(systemName: "link")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("iPhone URL")
+                            .font(H3.body(size: 13, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                        Text(pocket.publicURLString)
+                            .font(H3.mono(size: 11))
+                            .foregroundStyle(H3.ink500)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 12)
+                    SettingsIconButton(systemName: "doc.on.doc",
+                                       help: "Copy Catapocket URL") {
+                        copyToPasteboard(pocket.publicURLString)
+                    }
+                    SettingsIconButton(systemName: "arrow.up.right.square",
+                                       help: "Open Catapocket") {
+                        if let url = pocket.publicURL {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+
+                if settings.pocketRemoteEnabled {
+                    SettingsDivider()
+                    HStack(alignment: .center, spacing: 14) {
+                        PocketQRCodeView(string: pocket.pairingPayloadString)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Scan with Catapocket on iPhone")
+                                .font(H3.body(size: 13, weight: .semibold))
+                                .foregroundStyle(H3.ink900)
+                            Text("Pairs this Mac with the local URL and private token. Safari can still open the URL above.")
+                                .font(H3.body(size: 11))
+                                .foregroundStyle(H3.ink500)
+                                .fixedSize(horizontal: false, vertical: true)
+                            SettingsMiniButton(title: "Copy pair code", systemName: "doc.on.doc") {
+                                copyToPasteboard(pocket.pairingPayloadString)
+                            }
+                            .padding(.top, 2)
+                        }
+                        Spacer()
+                    }
+                }
+            }
+
+            GeneralSettingsCard(title: "Catapocket Links") {
+                if pocket.links.isEmpty {
+                    HStack(spacing: 12) {
+                        SettingsGlyph(systemName: "tray")
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Nothing pocketed yet")
+                                .font(H3.body(size: 13, weight: .semibold))
+                                .foregroundStyle(H3.ink900)
+                            Text("Send a link from Catapocket and it will appear here.")
+                                .font(H3.body(size: 11))
+                                .foregroundStyle(H3.ink500)
+                        }
+                        Spacer()
+                    }
+                } else {
+                    ForEach(Array(pocket.links.enumerated()), id: \.element.id) { index, link in
+                        if index > 0 { SettingsDivider() }
+                        PocketLinkSettingsRow(link: link) {
+                            pocket.queue(link)
+                        } delete: {
+                            pocket.delete(link.id)
+                        }
+                    }
+                }
+            }
+
+            GeneralSettingsCard(title: "Security") {
+                HStack(spacing: 12) {
+                    SettingsGlyph(systemName: "key")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Private token")
+                            .font(H3.body(size: 13, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                        Text("Changing it invalidates old Catapocket links and QR codes.")
+                            .font(H3.body(size: 11))
+                            .foregroundStyle(H3.ink500)
+                    }
+                    Spacer(minLength: 12)
+                    SettingsMiniButton(title: "Reset", systemName: "arrow.triangle.2.circlepath") {
+                        pocket.resetToken()
+                    }
+                }
+            }
+        }
+        .onAppear {
+            pocket.applySettings()
+        }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
+private struct PocketLinkSettingsRow: View {
+    let link: PocketLink
+    let queue: () -> Void
+    let delete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsGlyph(systemName: link.mode == .audio ? "music.note" : "play.rectangle")
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(link.title)
+                        .font(H3.body(size: 13, weight: .semibold))
+                        .foregroundStyle(H3.ink900)
+                        .lineLimit(1)
+                    if link.queuedAt != nil {
+                        Text("queued")
+                            .font(H3.body(size: 10, weight: .bold))
+                            .foregroundStyle(H3.green)
+                    }
+                }
+                Text("\(link.site.title) · \(link.mode.rawValue) · \(link.url)")
+                    .font(H3.body(size: 11))
+                    .foregroundStyle(H3.ink500)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 12)
+            SettingsIconButton(systemName: "arrow.down.circle",
+                               help: "Queue this link") {
+                queue()
+            }
+            SettingsIconButton(systemName: "trash",
+                               help: "Remove from Catapocket") {
+                delete()
+            }
+        }
+    }
+}
+
+private struct PocketQRCodeView: View {
+    let string: String
+
+    var body: some View {
+        if let image = Self.makeImage(from: string) {
+            Image(nsImage: image)
+                .interpolation(.none)
+                .resizable()
+                .frame(width: 118, height: 118)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
+                        .fill(Color.white)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
+                        .stroke(H3.cardStroke, lineWidth: 1)
+                )
+        }
+    }
+
+    private static func makeImage(from string: String) -> NSImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(string.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        let rep = NSCIImageRep(ciImage: scaled)
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        return image
+    }
+}
+
+private struct GeneralSettingsCard<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(H3.body(size: 15, weight: .semibold))
+                .foregroundStyle(H3.ink900)
+                .padding(.horizontal, 2)
+            VStack(spacing: 0) {
+                content()
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
+                    .fill(H3.cardFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
+                    .stroke(H3.cardStroke, lineWidth: 1)
+            )
+            .shadow(color: H3.shadowDrop.opacity(0.12), radius: 5, y: 2)
+        }
+    }
+}
+
+private struct SettingsDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(H3.cardStroke)
+            .frame(height: 1)
+            .padding(.vertical, 10)
+    }
+}
+
+private struct SettingsGlyph: View {
+    let systemName: String
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(H3.blue400)
+            .frame(width: 28, height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                    .fill(H3.blue50)
+            )
+    }
+}
+
+private struct SettingsMiniButton: View {
+    let title: String
+    let systemName: String
+    let action: () -> Void
+
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: systemName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 13, height: 13)
+                Text(title)
+                    .font(H3.body(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isEnabled ? H3.blue400 : H3.ink300)
+            .padding(.horizontal, 11)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                    .fill(isEnabled && hovering ? H3.blue50 : H3.ink50)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                    .stroke(H3.cardStroke, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(H3.appleSnap, value: hovering)
+    }
+}
+
+private struct SettingsIconButton: View {
+    let systemName: String
+    let help: String
+    let action: () -> Void
+
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isEnabled ? H3.blue400 : H3.ink300)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                        .fill(isEnabled && hovering ? H3.blue50 : H3.ink50)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                        .stroke(H3.cardStroke, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .onHover { hovering = $0 }
+        .animation(H3.appleSnap, value: hovering)
+    }
+}
+
+private struct SettingsNumberRow: View {
+    let systemName: String
+    let title: String
+    var detail: String? = nil
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step: Int = 1
+    var suffix: String = ""
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsGlyph(systemName: systemName)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(H3.body(size: 13, weight: .semibold))
+                    .foregroundStyle(H3.ink900)
+                if let detail {
+                    Text(detail)
+                        .font(H3.body(size: 11))
+                        .foregroundStyle(H3.ink500)
+                }
+            }
+            Spacer(minLength: 12)
+            HStack(spacing: 8) {
+                NumberAdjustButton(systemName: "minus") {
+                    value = max(range.lowerBound, value - step)
+                }
+                .disabled(value <= range.lowerBound)
+                Text("\(value)\(suffix)")
+                    .font(H3.mono(size: 13, weight: .semibold))
+                    .foregroundStyle(H3.ink900)
+                    .frame(minWidth: suffix.isEmpty ? 42 : 70)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                            .fill(H3.ink50)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                            .stroke(H3.cardStroke, lineWidth: 1)
+                    )
+                NumberAdjustButton(systemName: "plus") {
+                    value = min(range.upperBound, value + step)
+                }
+                .disabled(value >= range.upperBound)
+            }
+        }
+    }
+}
+
+private struct NumberAdjustButton: View {
+    let systemName: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(H3.blue400)
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                        .fill(H3.blue50)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SettingsToggleRow: View {
+    let systemName: String
+    let title: String
+    var detail: String? = nil
+    @Binding var isOn: Bool
+    var isDisabled: Bool = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsGlyph(systemName: systemName)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(H3.body(size: 13, weight: .semibold))
+                    .foregroundStyle(isDisabled ? H3.ink300 : H3.ink900)
+                if let detail {
+                    Text(detail)
+                        .font(H3.body(size: 11))
+                        .foregroundStyle(isDisabled ? H3.ink300 : H3.ink500)
+                }
+            }
+            Spacer(minLength: 12)
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(H3.blue400)
+                .disabled(isDisabled)
+        }
+    }
+}
+
+private struct SettingsPickerRow<Control: View>: View {
+    let systemName: String
+    let title: String
+    var detail: String? = nil
+    @ViewBuilder var control: () -> Control
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsGlyph(systemName: systemName)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(H3.body(size: 13, weight: .semibold))
+                    .foregroundStyle(H3.ink900)
+                if let detail {
+                    Text(detail)
+                        .font(H3.body(size: 11))
+                        .foregroundStyle(H3.ink500)
+                }
+            }
+            Spacer(minLength: 12)
+            control()
+        }
+    }
+}
+
 // MARK: - Quality
 
 private struct QualitySettingsTab: View {
     @Environment(AppSettings.self) private var settings
+
     var body: some View {
         @Bindable var s = settings
-        Form {
-            Section("Video") {
-                Picker("Max quality:", selection: $s.videoQuality) {
-                    ForEach(VideoQuality.allCases) { q in
-                        Text(q.label).tag(q)
+        SettingsPage(title: "quality",
+                     subtitle: "pick the default media shape catapult asks yt-dlp for before presets or quick actions override it.") {
+            GeneralSettingsCard(title: "Video") {
+                SettingsPickerRow(systemName: "rectangle.on.rectangle",
+                                  title: "Max quality") {
+                    Picker("", selection: $s.videoQuality) {
+                        ForEach(VideoQuality.allCases) { q in
+                            Text(q.label).tag(q)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 220)
                 }
-                Picker("Container:", selection: $s.videoContainer) {
-                    ForEach(VideoContainer.allCases) { c in
-                        Text(c.label).tag(c)
+                SettingsDivider()
+                SettingsPickerRow(systemName: "shippingbox",
+                                  title: "Container") {
+                    Picker("", selection: $s.videoContainer) {
+                        ForEach(VideoContainer.allCases) { c in
+                            Text(c.label).tag(c)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 220)
                 }
             }
-            Section("Audio") {
-                Picker("Audio format:", selection: $s.audioFormat) {
-                    ForEach(AudioFormat.allCases) { f in
-                        Text(f.label).tag(f)
+
+            GeneralSettingsCard(title: "Audio") {
+                SettingsPickerRow(systemName: "waveform",
+                                  title: "Audio format") {
+                    Picker("", selection: $s.audioFormat) {
+                        ForEach(AudioFormat.allCases) { f in
+                            Text(f.label).tag(f)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 220)
                 }
-                HStack {
-                    Text("Bitrate:")
-                    Spacer()
+                SettingsDivider()
+                HStack(spacing: 12) {
+                    SettingsGlyph(systemName: "slider.horizontal.3")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Bitrate")
+                            .font(H3.body(size: 13, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                        Text("Used when extracting compressed audio.")
+                            .font(H3.body(size: 11))
+                            .foregroundStyle(H3.ink500)
+                    }
+                    Spacer(minLength: 12)
                     Slider(value: Binding(
                         get: { Double(settings.audioQualityKbps) },
                         set: { s.audioQualityKbps = Int($0) }
                     ), in: 96...320, step: 32)
-                    .frame(width: 200)
+                    .tint(H3.blue400)
+                    .frame(width: 190)
                     Text("\(settings.audioQualityKbps) kbps")
-                        .monospacedDigit()
-                        .font(.callout)
-                        .frame(width: 70, alignment: .trailing)
+                        .font(H3.mono(size: 12, weight: .semibold))
+                        .foregroundStyle(H3.ink900)
+                        .frame(width: 78, alignment: .trailing)
                 }
+                SettingsDivider()
+                SettingsToggleRow(systemName: "speaker.wave.3",
+                                  title: "Match streaming loudness",
+                                  detail: "Normalizes quiet downloads toward YouTube / TikTok-style playback volume.",
+                                  isOn: $s.normalizeAudio)
             }
-            Section("Metadata") {
-                Toggle("Embed thumbnail", isOn: $s.embedThumbnail)
-                Toggle("Embed chapters & metadata", isOn: $s.embedMetadata)
-                Toggle("Embed English subtitles when available", isOn: $s.embedSubtitles)
-                Toggle("Save thumbnail as a separate file", isOn: $s.writeThumbnail)
+
+            GeneralSettingsCard(title: "Metadata") {
+                SettingsToggleRow(systemName: "photo.on.rectangle",
+                                  title: "Embed thumbnail",
+                                  isOn: $s.embedThumbnail)
+                SettingsDivider()
+                SettingsToggleRow(systemName: "text.badge.checkmark",
+                                  title: "Embed chapters and metadata",
+                                  isOn: $s.embedMetadata)
+                SettingsDivider()
+                SettingsToggleRow(systemName: "captions.bubble",
+                                  title: "Embed English subtitles",
+                                  detail: "Uses uploaded or auto-generated captions when available.",
+                                  isOn: $s.embedSubtitles)
+                SettingsDivider()
+                SettingsToggleRow(systemName: "photo",
+                                  title: "Save thumbnail separately",
+                                  isOn: $s.writeThumbnail)
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -206,61 +1175,87 @@ private struct QualitySettingsTab: View {
 
 private struct NetworkSettingsTab: View {
     @Environment(AppSettings.self) private var settings
+
     var body: some View {
         @Bindable var s = settings
-        Form {
-            Section {
-                Picker("Import cookies from:", selection: $s.cookieSource) {
-                    ForEach(CookieSource.allCases) { c in
-                        Text(c.label).tag(c)
+        SettingsPage(title: "network",
+                     subtitle: "cookies, proxy, and bandwidth rules stay local and only get passed to yt-dlp when a download needs them.") {
+            GeneralSettingsCard(title: "Cookies") {
+                SettingsPickerRow(systemName: "key",
+                                  title: "Import cookies from",
+                                  detail: "For age-gated, private, members-only, or logged-in videos.") {
+                    Picker("", selection: $s.cookieSource) {
+                        ForEach(CookieSource.allCases) { c in
+                            Text(c.label).tag(c)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 220)
                 }
-            } header: {
-                Text("Cookies")
-            } footer: {
-                Text("Lets yt-dlp access age-gated or members-only content you're logged into in that browser. Stays on your machine.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
-            Section {
-                TextField("Proxy URL:", text: $s.proxyURL,
-                          prompt: Text("socks5://127.0.0.1:1080"))
-                    .textFieldStyle(.roundedBorder)
-                HStack {
-                    Text("Rate limit:")
-                    Spacer()
+            GeneralSettingsCard(title: "Connection") {
+                HStack(alignment: .top, spacing: 12) {
+                    SettingsGlyph(systemName: "point.3.connected.trianglepath.dotted")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Proxy URL")
+                            .font(H3.body(size: 13, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                        Text("Leave blank unless you already use one.")
+                            .font(H3.body(size: 11))
+                            .foregroundStyle(H3.ink500)
+                    }
+                    Spacer(minLength: 12)
+                    TextField("", text: $s.proxyURL,
+                              prompt: Text("socks5://127.0.0.1:1080"))
+                        .textFieldStyle(.plain)
+                        .font(H3.mono(size: 12))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .frame(width: 260)
+                        .background(
+                            RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                                .fill(H3.ink50)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                                        .stroke(H3.cardStroke, lineWidth: 1)
+                                )
+                        )
+                }
+                SettingsDivider()
+                HStack(spacing: 12) {
+                    SettingsGlyph(systemName: "speedometer")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Rate limit")
+                            .font(H3.body(size: 13, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                        Text("Useful on shared connections. Zero means unlimited.")
+                            .font(H3.body(size: 11))
+                            .foregroundStyle(H3.ink500)
+                    }
+                    Spacer(minLength: 12)
                     Slider(value: Binding(
                         get: { Double(settings.rateLimitKBps) },
                         set: { s.rateLimitKBps = Int($0) }
                     ), in: 0...20000, step: 250)
-                    .frame(width: 200)
+                    .tint(H3.blue400)
+                    .frame(width: 190)
                     Text(settings.rateLimitKBps == 0
                          ? "unlimited"
                          : "\(settings.rateLimitKBps) KB/s")
-                        .monospacedDigit()
-                        .font(.callout)
-                        .frame(width: 90, alignment: .trailing)
+                        .font(H3.mono(size: 12, weight: .semibold))
+                        .foregroundStyle(H3.ink900)
+                        .frame(width: 98, alignment: .trailing)
                 }
-            } header: {
-                Text("Network")
-            } footer: {
-                Text("Set a rate limit if you're sharing a connection. Leave blank and zero for unlimited.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
-            Section {
-                Toggle("Auto-update yt-dlp when Catapult launches", isOn: $s.autoUpdateYtDlpOnLaunch)
-            } header: {
-                Text("Updates")
-            } footer: {
-                Text("yt-dlp moves fast — turning this on keeps you on the latest extractors without thinking about it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            GeneralSettingsCard(title: "Tool Updates") {
+                SettingsToggleRow(systemName: "arrow.triangle.2.circlepath",
+                                  title: "Auto-update yt-dlp when Catapult launches",
+                                  detail: "Keeps extractors fresh before sites move the furniture around.",
+                                  isOn: $s.autoUpdateYtDlpOnLaunch)
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -271,36 +1266,55 @@ private struct SponsorBlockTab: View {
 
     var body: some View {
         @Bindable var s = settings
-        Form {
-            Section {
-                Picker("Sponsor segments:", selection: $s.sponsorBlockMode) {
-                    ForEach(SponsorBlockMode.allCases) { m in
-                        Text(m.label).tag(m)
+        SettingsPage(title: "sponsorblock",
+                     subtitle: "mark or remove crowd-sourced sponsor, intro, outro, and interaction segments while yt-dlp processes the video.") {
+            GeneralSettingsCard(title: "Mode") {
+                SettingsPickerRow(systemName: "rectangle.badge.minus",
+                                  title: "Sponsor segments",
+                                  detail: "Mark creates chapters. Remove cuts those sections out.") {
+                    Picker("", selection: $s.sponsorBlockMode) {
+                        ForEach(SponsorBlockMode.allCases) { m in
+                            Text(m.label).tag(m)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 220)
                 }
-                .pickerStyle(.inline)
-            } header: {
-                Text("SponsorBlock")
-            } footer: {
-                Text("Uses crowd-sourced data from sponsor.ajay.app to identify sponsor, intro, outro, and other skippable segments. \"Mark\" adds them as chapters; \"Remove\" cuts them out of the final file.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
-            Section("Categories") {
-                ForEach(SponsorCategory.allCases) { cat in
-                    Toggle(cat.label, isOn: Binding(
-                        get: { settings.sponsorBlockCategories.contains(cat) },
-                        set: { on in
-                            if on { s.sponsorBlockCategories.insert(cat) }
-                            else  { s.sponsorBlockCategories.remove(cat) }
+            GeneralSettingsCard(title: "Categories") {
+                VStack(spacing: 0) {
+                    ForEach(Array(SponsorCategory.allCases.enumerated()), id: \.element.id) { index, cat in
+                        SettingsToggleRow(systemName: sponsorIcon(for: cat),
+                                          title: cat.label,
+                                          isOn: Binding(
+                                            get: { settings.sponsorBlockCategories.contains(cat) },
+                                            set: { on in
+                                                if on { s.sponsorBlockCategories.insert(cat) }
+                                                else { s.sponsorBlockCategories.remove(cat) }
+                                            }
+                                          ),
+                                          isDisabled: settings.sponsorBlockMode == .off)
+                        if index != SponsorCategory.allCases.count - 1 {
+                            SettingsDivider()
                         }
-                    ))
-                    .disabled(settings.sponsorBlockMode == .off)
+                    }
                 }
             }
         }
-        .formStyle(.grouped)
+    }
+
+    private func sponsorIcon(for category: SponsorCategory) -> String {
+        switch category {
+        case .sponsor: return "dollarsign.circle"
+        case .selfpromo: return "person.crop.circle.badge.plus"
+        case .interaction: return "hand.tap"
+        case .intro: return "sparkles"
+        case .outro: return "rectangle.portrait.and.arrow.right"
+        case .preview: return "eye"
+        case .musicOfftopic: return "music.note.slash"
+        case .filler: return "ellipsis.bubble"
+        }
     }
 }
 
@@ -311,46 +1325,77 @@ private struct AdvancedSettingsTab: View {
     @Environment(DownloadManager.self) private var downloads
 
     var body: some View {
-        Form {
-            Section("Tools") {
-                HStack {
-                    Text("yt-dlp binary:")
-                    Spacer()
-                    Text(dependencies.ytDlpPath.path)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Button {
-                        revealInFinder(dependencies.ytDlpPath)
-                    } label: { Image(systemName: "magnifyingglass") }
-                    .disabled(!FileManager.default.fileExists(atPath: dependencies.ytDlpPath.path))
-                }
-                HStack {
-                    Text("ffmpeg binary:")
-                    Spacer()
-                    Text(dependencies.ffmpegPath.path)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Button {
-                        revealInFinder(dependencies.ffmpegPath)
-                    } label: { Image(systemName: "magnifyingglass") }
-                    .disabled(!FileManager.default.fileExists(atPath: dependencies.ffmpegPath.path))
-                }
+        SettingsPage(title: "advanced",
+                     subtitle: "paths and queue controls for the parts you only need when something unusual is happening.") {
+            GeneralSettingsCard(title: "Tools") {
+                toolPathRow(name: "yt-dlp binary",
+                            path: dependencies.ytDlpPath,
+                            icon: "terminal")
+                SettingsDivider()
+                toolPathRow(name: "ffmpeg binary",
+                            path: dependencies.ffmpegPath,
+                            icon: "film")
             }
-            Section("Queue") {
-                Button("Cancel all running downloads") {
-                    for i in downloads.items {
-                        if case .downloading = i.status { downloads.cancel(i) }
+
+            GeneralSettingsCard(title: "Queue") {
+                HStack(spacing: 12) {
+                    SettingsGlyph(systemName: "xmark.circle")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Cancel running downloads")
+                            .font(H3.body(size: 13, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                        Text("Stops active processes and leaves finished history alone.")
+                            .font(H3.body(size: 11))
+                            .foregroundStyle(H3.ink500)
+                    }
+                    Spacer(minLength: 12)
+                    SettingsMiniButton(title: "Cancel", systemName: "xmark") {
+                        for i in downloads.items {
+                            if case .downloading = i.status { downloads.cancel(i) }
+                        }
                     }
                 }
-                .foregroundStyle(.red)
-                Button("Remove finished from list") {
-                    downloads.clearFinished()
+                SettingsDivider()
+                HStack(spacing: 12) {
+                    SettingsGlyph(systemName: "trash")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Remove finished from list")
+                            .font(H3.body(size: 13, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                        Text("Clears completed, failed, and cancelled rows from the menu.")
+                            .font(H3.body(size: 11))
+                            .foregroundStyle(H3.ink500)
+                    }
+                    Spacer(minLength: 12)
+                    SettingsMiniButton(title: "Clear", systemName: "trash") {
+                        downloads.clearFinished()
+                    }
                 }
             }
         }
-        .formStyle(.grouped)
+    }
+
+    private func toolPathRow(name: String, path: URL, icon: String) -> some View {
+        HStack(spacing: 12) {
+            SettingsGlyph(systemName: icon)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(name)
+                    .font(H3.body(size: 13, weight: .semibold))
+                    .foregroundStyle(H3.ink900)
+                Text(path.path)
+                    .font(H3.mono(size: 11))
+                    .foregroundStyle(H3.ink500)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 12)
+            SettingsIconButton(systemName: "magnifyingglass",
+                               help: "Reveal in Finder") {
+                revealInFinder(path)
+            }
+            .disabled(!FileManager.default.fileExists(atPath: path.path))
+        }
     }
 
     /// Reveals a file in Finder if it exists; otherwise opens its parent.
@@ -370,22 +1415,27 @@ private struct AdvancedSettingsTab: View {
 
 private struct DependenciesTab: View {
     @Environment(DependencyManager.self) private var dependencies
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        SettingsPage(title: "dependencies",
+                     subtitle: "yt-dlp does the site extraction; ffmpeg handles muxing, conversion, clips, and thumbnails.") {
             stateBanner
-            dependencyRow(name: "yt-dlp",
-                          version: dependencies.ytDlpVersion,
-                          exists: FileManager.default.fileExists(atPath: dependencies.ytDlpPath.path),
-                          update: { Task { await dependencies.updateYtDlp() } },
-                          reinstall: { Task { await dependencies.updateYtDlp() } })
-            dependencyRow(name: "ffmpeg",
-                          version: dependencies.ffmpegVersion,
-                          exists: FileManager.default.fileExists(atPath: dependencies.ffmpegPath.path),
-                          update: { Task { await dependencies.reinstallFfmpeg() } },
-                          reinstall: { Task { await dependencies.reinstallFfmpeg() } })
-            Spacer()
+            GeneralSettingsCard(title: "Tools") {
+                dependencyRow(name: "yt-dlp",
+                              icon: "arrow.down.circle",
+                              version: dependencies.ytDlpVersion,
+                              exists: FileManager.default.fileExists(atPath: dependencies.ytDlpPath.path),
+                              update: { Task { await dependencies.updateYtDlp() } },
+                              reinstall: { Task { await dependencies.updateYtDlp() } })
+                SettingsDivider()
+                dependencyRow(name: "ffmpeg",
+                              icon: "film.stack",
+                              version: dependencies.ffmpegVersion,
+                              exists: FileManager.default.fileExists(atPath: dependencies.ffmpegPath.path),
+                              update: { Task { await dependencies.reinstallFfmpeg() } },
+                              reinstall: { Task { await dependencies.reinstallFfmpeg() } })
+            }
         }
-        .padding(20)
     }
 
     @ViewBuilder
@@ -418,51 +1468,67 @@ private struct DependenciesTab: View {
     private func banner(icon: String, tint: Color, title: String,
                         subtitle: String, progress: Double? = nil) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: icon).font(.title2).foregroundStyle(tint)
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
+                        .fill(tint.opacity(0.12))
+                )
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
+                Text(title)
+                    .font(H3.body(size: 14, weight: .semibold))
+                    .foregroundStyle(H3.ink900)
                 if !subtitle.isEmpty {
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    Text(subtitle)
+                        .font(H3.body(size: 11))
+                        .foregroundStyle(H3.ink500)
                 }
                 if let p = progress {
-                    ProgressView(value: p).tint(tint)
+                    ProgressView(value: p)
+                        .tint(tint)
+                        .padding(.top, 4)
                 }
             }
             Spacer()
         }
-        .padding(12)
+        .padding(14)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(tint.opacity(0.12))
+            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
+                .fill(H3.cardFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
+                .stroke(H3.cardStroke, lineWidth: 1)
         )
     }
 
     private func dependencyRow(name: String,
+                               icon: String,
                                version: String?,
                                exists: Bool,
                                update: @escaping () -> Void,
                                reinstall: @escaping () -> Void) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.system(.body, design: .rounded).weight(.semibold))
+        HStack(spacing: 12) {
+            SettingsGlyph(systemName: icon)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(name)
+                    .font(H3.body(size: 13, weight: .semibold))
+                    .foregroundStyle(H3.ink900)
                 Text(version ?? (exists ? "Installed" : "Not installed"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(H3.body(size: 11))
+                    .foregroundStyle(exists ? H3.ink500 : H3.red)
                     .lineLimit(1)
             }
             Spacer()
-            Button("Update", action: update)
-            Button("Reinstall", action: reinstall).buttonStyle(.bordered)
+            SettingsMiniButton(title: exists ? "Update" : "Install",
+                               systemName: "arrow.clockwise",
+                               action: update)
+            SettingsMiniButton(title: "Reinstall",
+                               systemName: "hammer",
+                               action: reinstall)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.background.opacity(0.5))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(.separator, lineWidth: 0.5)
-                )
-        )
     }
 }
 
@@ -481,29 +1547,14 @@ private struct SitesTab: View {
     ]
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("sites")
-                        .font(H3.display(size: 26, weight: .medium))
-                        .foregroundStyle(H3.ink900)
-                    Text("catapult works with anything yt-dlp supports. toggle cookies on for a site to pull them from the browser you picked in network settings — handy for private, age-gated, or members-only stuff.")
-                        .font(H3.body(size: 12))
-                        .foregroundStyle(H3.ink500)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 4)
-                .padding(.top, 6)
-
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(SupportedSite.allCases) { site in
-                        SiteCard(site: site)
-                    }
+        SettingsPage(title: "sites",
+                     subtitle: "catapult works with anything yt-dlp supports. toggle cookies on for a site to pull them from the browser you picked in network settings — handy for private, age-gated, or members-only stuff.") {
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(SupportedSite.allCases) { site in
+                    SiteCard(site: site)
                 }
             }
-            .padding(16)
         }
-        .background(H3.ink50)
     }
 }
 
@@ -522,6 +1573,7 @@ private struct SiteCard: View {
         case .twitch:     return H3.gradBubble
         case .vimeo:      return H3.gradPool
         case .soundcloud: return H3.gradRainbow
+        case .spotify:    return H3.gradDeep
         case .bilibili:   return H3.gradPool
         case .bluesky:    return H3.gradSky
         case .generic:    return H3.gradBubble
@@ -607,43 +1659,28 @@ private struct TerminalTab: View {
     private let exampleCommands: [(String, String)] = [
         ("catapult",                      "launch the tui (or use the `capu` alias)"),
         ("capu video <url>",              "download as video"),
+        ("capu small <url>",              "download only if it fits the size limit"),
         ("capu audio <url>",              "extract audio"),
         ("capu thumb <url>",              "save the thumbnail"),
         ("capu cut <url> 0:12 0:42",      "clip a section"),
+        ("capu catapocket copy",          "copy the local Catapocket remote URL"),
+        ("capu doctor",                   "check install, tools, and update route"),
         ("capu queue",                    "list recent downloads"),
     ]
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                installCard
-                commandsCard
-                if let error {
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 4)
-                }
+        SettingsPage(title: "terminal",
+                     subtitle: "prefer the keyboard? install the catapult cli — a tiny tui that shares this app's settings and binaries. works as one-shot commands too.") {
+            installCard
+            commandsCard
+            if let error {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 4)
             }
-            .padding(16)
         }
-        .background(H3.ink50)
         .onAppear { status = CLIInstaller.currentInstall }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("terminal")
-                .font(H3.display(size: 26, weight: .medium))
-                .foregroundStyle(H3.ink900)
-            Text("prefer the keyboard? install the catapult cli — a tiny tui that shares this app's settings and binaries. works as one-shot commands too.")
-                .font(H3.body(size: 12))
-                .foregroundStyle(H3.ink500)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 4)
-        .padding(.top, 4)
     }
 
     @ViewBuilder
@@ -666,12 +1703,12 @@ private struct TerminalTab: View {
                             .font(H3.body(size: 12))
                             .foregroundStyle(H3.ink500)
                             .fixedSize(horizontal: false, vertical: true)
-                    case .installed(let path, let onPath):
+                    case .installed(let path, let onPath, let isCurrent):
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(onPath ? H3.green : H3.amber)
+                                .fill(onPath && isCurrent ? H3.green : H3.amber)
                                 .frame(width: 8, height: 8)
-                            Text(onPath ? "installed, on your path" : "installed — not on your path yet")
+                            Text(cliStatusLabel(onPath: onPath, isCurrent: isCurrent))
                                 .font(H3.body(size: 14, weight: .semibold))
                                 .foregroundStyle(H3.ink900)
                         }
@@ -683,6 +1720,12 @@ private struct TerminalTab: View {
                             Text("also installed as ‘capu’ — same thing, fewer keystrokes.")
                                 .font(H3.body(size: 11))
                                 .foregroundStyle(H3.ink500)
+                        }
+                        if !isCurrent {
+                            Text("your installed command is from an older app build. reinstall to refresh it.")
+                                .font(H3.body(size: 11))
+                                .foregroundStyle(H3.amber)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         if !onPath {
                             Text("add this line to your ~/.zshrc, then restart terminal — or let me do it for you:")
@@ -711,7 +1754,7 @@ private struct TerminalTab: View {
                             Text("install catapult cli")
                         }
                     }
-                case .installed(_, let onPath):
+                case .installed(_, let onPath, _):
                     H3Button(gradient: H3.gradDeep) {
                         CLIInstaller.launchInTerminal()
                     } label: {
@@ -789,6 +1832,11 @@ private struct TerminalTab: View {
         }
     }
 
+    private func cliStatusLabel(onPath: Bool, isCurrent: Bool) -> String {
+        if !isCurrent { return "installed — update available" }
+        return onPath ? "installed, on your path" : "installed — not on your path yet"
+    }
+
     private var commandsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("commands")
@@ -838,7 +1886,7 @@ private struct TerminalTab: View {
     }
 
     private func doFixPath() {
-        guard case .installed(let path, _) = status else { return }
+        guard case .installed(let path, _, _) = status else { return }
         let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
         let result = CLIInstaller.addDirectoryToShellPath(dir)
         switch result {
@@ -858,9 +1906,8 @@ private struct TerminalTab: View {
 
 // MARK: - Subscriptions
 //
-// Manage YouTube channel subscriptions. Catapult polls the public RSS feed
-// (https://www.youtube.com/feeds/videos.xml?channel_id=…) every N minutes
-// and auto-enqueues new uploads.
+// Manage creator subscriptions. YouTube uses public RSS; TikTok and other
+// supported profile/playlist URLs use yt-dlp flat playlist polling.
 
 private struct SubscriptionsTab: View {
     @State private var subs = SubscriptionManager.shared
@@ -870,49 +1917,39 @@ private struct SubscriptionsTab: View {
     @State private var checking: Bool = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("subscriptions")
-                        .font(H3.display(size: 26, weight: .medium))
-                        .foregroundStyle(H3.ink900)
-                    Text("watch a youtube channel — i'll grab every recent upload right away, then poll the rss feed for new ones. no api key, no login. each subscription has its own quality + preset.")
-                        .font(H3.body(size: 12))
-                        .foregroundStyle(H3.ink500)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 4)
-                .padding(.top, 6)
-
-                addCard
-                controlsCard
-                if subs.subscriptions.isEmpty {
-                    emptyCard
-                } else {
-                    VStack(spacing: 8) {
-                        ForEach(subs.subscriptions) { sub in
-                            SubscriptionRow(sub: sub)
-                        }
+        SettingsPage(title: "subscriptions",
+                     subtitle: "watch creators from youtube, tiktok, instagram, soundcloud, vimeo, x, and more. paste a channel, profile, playlist, or collection url and i'll check for new posts.") {
+            addCard
+            controlsCard
+            if subs.subscriptions.isEmpty {
+                emptyCard
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(subs.subscriptions) { sub in
+                        SubscriptionRow(sub: sub)
                     }
                 }
             }
-            .padding(16)
         }
-        .background(H3.ink50)
     }
 
     private var addCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "plus.circle")
-                    .foregroundStyle(H3.blue400)
-                TextField("channel url, @handle, or UC… id",
+                SettingsGlyph(systemName: "plus")
+                TextField("channel, profile, playlist, or collection url",
                           text: $newInput,
-                          prompt: Text("https://www.youtube.com/@mkbhd"))
+                          prompt: Text("https://www.tiktok.com/@h3nryXYZ"))
                     .textFieldStyle(.plain)
+                    .font(H3.body(size: 13))
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .background(settingsFieldBackground)
                     .onSubmit(addChannel)
-                Button("watch") { addChannel() }
-                    .buttonStyle(.borderedProminent)
+                SettingsMiniButton(title: resolving ? "Resolving" : "Watch",
+                                   systemName: resolving ? "hourglass" : "play.circle") {
+                    addChannel()
+                }
                     .disabled(newInput.trimmingCharacters(in: .whitespaces).isEmpty || resolving)
             }
             if resolving {
@@ -931,7 +1968,7 @@ private struct SubscriptionsTab: View {
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous).fill(.white)
+            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous).fill(H3.cardFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
@@ -940,39 +1977,54 @@ private struct SubscriptionsTab: View {
     }
 
     private var controlsCard: some View {
-        HStack(spacing: 12) {
-            Toggle("auto-check", isOn: Binding(
+        HStack(spacing: 14) {
+            SettingsGlyph(systemName: "antenna.radiowaves.left.and.right")
+            Text("Auto-check")
+                .font(H3.body(size: 13, weight: .semibold))
+                .foregroundStyle(H3.ink900)
+            Toggle("", isOn: Binding(
                 get: { subs.enabled },
                 set: { subs.enabled = $0 }
             ))
+            .labelsHidden()
             .toggleStyle(.switch)
+            .controlSize(.small)
             .tint(H3.blue400)
-            Divider().frame(height: 18)
-            Stepper("every \(subs.pollMinutes) min",
-                    value: Binding(
-                        get: { subs.pollMinutes },
-                        set: { subs.pollMinutes = max(15, $0) }
-                    ),
-                    in: 15...720, step: 15)
+            Divider().frame(height: 20)
+            Text("Every")
+                .font(H3.body(size: 12, weight: .semibold))
+                .foregroundStyle(H3.ink500)
+            HStack(spacing: 8) {
+                NumberAdjustButton(systemName: "minus") {
+                    subs.pollMinutes = max(15, subs.pollMinutes - 15)
+                }
+                .disabled(subs.pollMinutes <= 15)
+                Text("\(subs.pollMinutes) min")
+                    .font(H3.mono(size: 12, weight: .semibold))
+                    .foregroundStyle(H3.ink900)
+                    .frame(width: 74)
+                    .frame(height: 30)
+                    .background(settingsFieldBackground)
+                NumberAdjustButton(systemName: "plus") {
+                    subs.pollMinutes = min(720, subs.pollMinutes + 15)
+                }
+                .disabled(subs.pollMinutes >= 720)
+            }
             Spacer()
             if let last = subs.lastCheckAt {
                 Text("last: \(last.formatted(date: .omitted, time: .shortened))")
                     .font(H3.body(size: 11))
                     .foregroundStyle(H3.ink500)
             }
-            Button {
+            SettingsMiniButton(title: checking ? "Checking" : "Check now",
+                               systemName: checking ? "hourglass" : "arrow.clockwise") {
                 checkNow()
-            } label: {
-                HStack(spacing: 4) {
-                    if checking { ProgressView().controlSize(.mini) }
-                    Text("check now")
-                }
             }
             .disabled(subs.subscriptions.isEmpty || checking)
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous).fill(.white)
+            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous).fill(H3.cardFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
@@ -980,11 +2032,19 @@ private struct SubscriptionsTab: View {
         )
     }
 
+    private var settingsFieldBackground: some View {
+        RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+            .fill(H3.ink50)
+            .overlay(
+                RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                    .stroke(H3.cardStroke, lineWidth: 1)
+            )
+    }
+
     private var emptyCard: some View {
         HStack(spacing: 8) {
-            Image(systemName: "tray")
-                .foregroundStyle(H3.ink300)
-            Text("no subscriptions yet — paste a channel url above.")
+            SettingsGlyph(systemName: "tray")
+            Text("no subscriptions yet — paste a creator, profile, or playlist url above.")
                 .font(H3.body(size: 12))
                 .foregroundStyle(H3.ink500)
         }
@@ -1006,10 +2066,13 @@ private struct SubscriptionsTab: View {
             await MainActor.run {
                 resolving = false
                 if let r = resolved {
-                    subs.add(channelID: r.id, title: r.title)
+                    subs.add(channelID: r.id,
+                             title: r.title,
+                             source: r.source,
+                             sourceURL: r.sourceURL)
                     newInput = ""
                 } else {
-                    resolveError = "couldn't find a channel at that url — check the link and try again."
+                    resolveError = "couldn't find a supported feed there — try a public profile, channel, playlist, or collection url."
                 }
             }
         }
@@ -1031,7 +2094,7 @@ private struct SubscriptionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            GradientGlyph(systemName: "play.rectangle.fill",
+            GradientGlyph(systemName: sub.source.glyph,
                           gradient: H3.gradRainbow,
                           size: 28)
                 .frame(width: 40, height: 40)
@@ -1043,6 +2106,9 @@ private struct SubscriptionRow: View {
                 HStack(spacing: 6) {
                     Image(systemName: modeIcon(sub.downloadMode))
                         .font(.system(size: 9))
+                    Text(sub.source.label)
+                        .font(H3.body(size: 10))
+                    Text("·").font(H3.body(size: 10))
                     Text(modeLabel(sub.downloadMode))
                         .font(H3.body(size: 10))
                     Text("·").font(H3.body(size: 10))
@@ -1107,7 +2173,7 @@ private struct SubscriptionRow: View {
         }
         .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous).fill(.white)
+            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous).fill(H3.cardFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
@@ -1156,32 +2222,17 @@ private struct DevicePresetsTab: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("devices")
-                        .font(H3.display(size: 26, weight: .medium))
-                        .foregroundStyle(H3.ink900)
-                    Text("one-tap recipes for specific hardware. retro presets transcode to h.264 baseline at the exact resolution the device accepts — so a 2006 ipod or a psp actually plays the file.")
-                        .font(H3.body(size: 12))
-                        .foregroundStyle(H3.ink500)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+        SettingsPage(title: "devices",
+                     subtitle: "one-tap recipes for specific hardware. retro presets transcode to h.264 baseline at the exact resolution the device accepts — so a 2006 ipod or a psp actually plays the file.") {
+            section(title: "modern", presets: modern)
+            section(title: "retro slop", presets: retro)
+
+            Text("tip: hold ⌘-click on the download button to pick a preset per-download. these tiles set your default — clear it by choosing 'no preset'.")
+                .font(H3.body(size: 11))
+                .foregroundStyle(H3.ink500)
                 .padding(.horizontal, 4)
-                .padding(.top, 6)
-
-                section(title: "modern", presets: modern)
-                section(title: "retro slop", presets: retro)
-
-                Text("tip: hold ⌘-click on the download button to pick a preset per-download. these tiles set your default — clear it by choosing 'no preset'.")
-                    .font(H3.body(size: 11))
-                    .foregroundStyle(H3.ink500)
-                    .padding(.horizontal, 4)
-                    .padding(.top, 4)
-            }
-            .padding(16)
+                .padding(.top, 4)
         }
-        .background(H3.ink50)
     }
 
     private func section(title: String, presets: [DevicePreset]) -> some View {
@@ -1269,28 +2320,37 @@ private struct PresetTile: View {
 
 private struct AboutTab: View {
     var body: some View {
-        VStack(spacing: 18) {
-            TiltyAppIcon(size: 220)
-                .padding(.top, 8)
-            Text("Catapult")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-            Text("a beautifully native yt-dlp companion for macos.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Text("version 1.0")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            Spacer()
-            HStack(spacing: 16) {
-                Link("yt-dlp", destination: URL(string: "https://github.com/yt-dlp/yt-dlp")!)
-                Link("ffmpeg", destination: URL(string: "https://ffmpeg.org")!)
+        SettingsPage(title: "about",
+                     subtitle: "the tiny h3-flavored macos companion around yt-dlp, ffmpeg, and your downloads folder.") {
+            VStack(spacing: 18) {
+                TiltyAppIcon(size: 190)
+                    .padding(.top, 6)
+                Text("Catapult")
+                    .font(H3.display(size: 34, weight: .medium))
+                    .foregroundStyle(H3.ink900)
+                Text("a beautifully native yt-dlp companion for macos.")
+                    .font(H3.body(size: 13))
+                    .foregroundStyle(H3.ink500)
+                    .multilineTextAlignment(.center)
+                HStack(spacing: 16) {
+                    Link("yt-dlp", destination: URL(string: "https://github.com/yt-dlp/yt-dlp")!)
+                    Link("ffmpeg", destination: URL(string: "https://ffmpeg.org")!)
+                    Link("updates", destination: URL(string: "https://h3nry.xyz/catapult/")!)
+                }
+                .font(H3.body(size: 12, weight: .semibold))
+                .foregroundStyle(H3.blue400)
             }
-            .font(.caption)
-            .padding(.bottom, 18)
+            .frame(maxWidth: .infinity)
+            .padding(22)
+            .background(
+                RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
+                    .fill(H3.cardFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
+                    .stroke(H3.cardStroke, lineWidth: 1)
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.top, 24)
     }
 }
 
@@ -1422,67 +2482,76 @@ private struct HistoryTab: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Filter / search bar
-            HStack(spacing: 8) {
-                Picker("", selection: $filter) {
-                    ForEach(Filter.allCases) { f in
-                        Text(f.label).tag(f)
+        SettingsPage(title: "history",
+                     subtitle: "recent downloads, failures, and cancelled items stay here so you can retry, reveal, or copy the original link.") {
+            GeneralSettingsCard(title: "Search") {
+                HStack(spacing: 10) {
+                    Picker("", selection: $filter) {
+                        ForEach(Filter.allCases) { f in
+                            Text(f.label).tag(f)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+
+                    TextField("Search title, channel, URL...", text: $query)
+                        .textFieldStyle(.plain)
+                        .font(H3.body(size: 12))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                                .fill(H3.ink50)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
+                                        .stroke(H3.cardStroke, lineWidth: 1)
+                                )
+                        )
+
+                    SettingsMiniButton(title: "Clear", systemName: "trash") {
+                        HistoryStore.shared.clearAll()
+                    }
+                    .disabled(history.entries.isEmpty)
                 }
-                .pickerStyle(.segmented)
-                .fixedSize()
-
-                TextField("Search title, channel, URL…", text: $query)
-                    .textFieldStyle(.roundedBorder)
-
-                Spacer(minLength: 4)
-
-                Button {
-                    HistoryStore.shared.clearAll()
-                } label: {
-                    Label("Clear", systemImage: "trash")
-                }
-                .disabled(history.entries.isEmpty)
             }
-            .padding(12)
 
-            Divider()
-
-            if filtered.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "tray")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.tertiary)
-                    Text(history.entries.isEmpty
-                         ? "no downloads yet — go grab something."
-                         : "no results.")
-                        .foregroundStyle(.secondary)
-                        .font(H3.body(size: 13))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(filtered) { entry in
-                        HistoryRow(entry: entry)
-                            .contextMenu {
-                                if entry.outputFile != nil, entry.fileExists {
-                                    Button("Reveal in Finder") {
-                                        HistoryStore.shared.reveal(entry)
+            GeneralSettingsCard(title: "Downloads") {
+                if filtered.isEmpty {
+                    HStack(spacing: 10) {
+                        SettingsGlyph(systemName: "tray")
+                        Text(history.entries.isEmpty
+                             ? "no downloads yet - go grab something."
+                             : "no results.")
+                            .font(H3.body(size: 13))
+                            .foregroundStyle(H3.ink500)
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(filtered.enumerated()), id: \.element.id) { index, entry in
+                            HistoryRow(entry: entry)
+                                .contextMenu {
+                                    if entry.outputFile != nil, entry.fileExists {
+                                        Button("Reveal in Finder") {
+                                            HistoryStore.shared.reveal(entry)
+                                        }
+                                    }
+                                    Button("Copy source URL") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(entry.url, forType: .string)
+                                    }
+                                    Divider()
+                                    Button("Remove from history", role: .destructive) {
+                                        HistoryStore.shared.remove(entry)
                                     }
                                 }
-                                Button("Copy source URL") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(entry.url, forType: .string)
-                                }
-                                Divider()
-                                Button("Remove from history", role: .destructive) {
-                                    HistoryStore.shared.remove(entry)
-                                }
+                            if index != filtered.count - 1 {
+                                SettingsDivider()
                             }
+                        }
                     }
                 }
-                .listStyle(.inset)
             }
         }
     }

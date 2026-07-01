@@ -11,7 +11,7 @@ import AppKit
 enum CLIInstaller {
     enum Status: Equatable {
         case notInstalled
-        case installed(path: String, onPath: Bool)
+        case installed(path: String, onPath: Bool, isCurrent: Bool)
     }
 
     /// Preferred user-writable install locations, first match wins.
@@ -25,9 +25,13 @@ enum CLIInstaller {
     }
 
     static var currentInstall: Status {
+        let source = Bundle.main.url(forResource: "catapult-cli", withExtension: "sh")
         for url in candidateInstallPaths {
             if FileManager.default.fileExists(atPath: url.path) {
-                return .installed(path: url.path, onPath: isDirectoryOnPath(url.deletingLastPathComponent()))
+                ensureCapuAlias(for: url)
+                return .installed(path: url.path,
+                                  onPath: isDirectoryOnPath(url.deletingLastPathComponent()),
+                                  isCurrent: source.map { isCurrentInstall(url, source: $0) } ?? true)
             }
         }
         return .notInstalled
@@ -36,11 +40,38 @@ enum CLIInstaller {
     /// True when the `capu` short-alias sibling is present next to the
     /// installed `catapult` binary.
     static var hasCapuAlias: Bool {
-        guard case .installed(let path, _) = currentInstall else { return false }
+        guard case .installed(let path, _, _) = currentInstall else { return false }
         let alias = URL(fileURLWithPath: path)
             .deletingLastPathComponent()
             .appendingPathComponent("capu")
         return FileManager.default.fileExists(atPath: alias.path)
+    }
+
+    /// Keep an already-installed CLI in sync with the app bundle after app
+    /// updates. This is intentionally best-effort: no prompts, no sudo, and
+    /// no install if the user never chose to install the CLI.
+    static func refreshIfInstalled() {
+        guard let src = Bundle.main.url(forResource: "catapult-cli", withExtension: "sh") else { return }
+        let fm = FileManager.default
+        for dst in candidateInstallPaths {
+            let hasMainSymlink = (try? fm.destinationOfSymbolicLink(atPath: dst.path)) != nil
+            guard fm.fileExists(atPath: dst.path) || hasMainSymlink else { continue }
+            let dir = dst.deletingLastPathComponent()
+            guard fm.isWritableFile(atPath: dir.path) else { return }
+
+            if !filesMatch(src, dst) {
+                try? installBinary(src: src, to: dst, fm: fm)
+            }
+
+            let alias = dir.appendingPathComponent("capu")
+            let hasAliasSymlink = (try? fm.destinationOfSymbolicLink(atPath: alias.path)) != nil
+            if !fm.fileExists(atPath: alias.path), !hasAliasSymlink {
+                try? installBinary(src: src, to: alias, fm: fm)
+            } else if !filesMatch(src, alias) {
+                try? installBinary(src: src, to: alias, fm: fm)
+            }
+            return
+        }
     }
 
     /// Copies the bundled script to the first writable directory and chmods
@@ -88,6 +119,27 @@ enum CLIInstaller {
         }
         try fm.copyItem(at: src, to: dst)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst.path)
+    }
+
+    private static func ensureCapuAlias(for main: URL) {
+        let fm = FileManager.default
+        let alias = main.deletingLastPathComponent().appendingPathComponent("capu")
+        let hasAliasSymlink = (try? fm.destinationOfSymbolicLink(atPath: alias.path)) != nil
+        guard !fm.fileExists(atPath: alias.path), !hasAliasSymlink else { return }
+        guard fm.isWritableFile(atPath: alias.deletingLastPathComponent().path) else { return }
+        let src = Bundle.main.url(forResource: "catapult-cli", withExtension: "sh") ?? main
+        try? installBinary(src: src, to: alias, fm: fm)
+    }
+
+    private static func isCurrentInstall(_ main: URL, source: URL) -> Bool {
+        let alias = main.deletingLastPathComponent().appendingPathComponent("capu")
+        return filesMatch(source, main) && filesMatch(source, alias)
+    }
+
+    private static func filesMatch(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let a = try? Data(contentsOf: lhs),
+              let b = try? Data(contentsOf: rhs) else { return false }
+        return a == b
     }
 
     static func uninstall() {
@@ -171,7 +223,7 @@ enum CLIInstaller {
     static func launchInTerminal() {
         let path: String
         switch currentInstall {
-        case .installed(let p, _): path = p
+        case .installed(let p, _, _): path = p
         case .notInstalled:
             guard let src = Bundle.main.url(forResource: "catapult-cli", withExtension: "sh") else { return }
             path = src.path

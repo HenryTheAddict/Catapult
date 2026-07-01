@@ -16,13 +16,17 @@ struct MenuBarLabel: View {
         }.count
         let hasPending = clipboard.detectedURL != nil
         HStack(spacing: 4) {
-            Image(nsImage: menuBarImage(iconName(active: activeCount > 0, hasPending: hasPending)))
+            Image(nsImage: MenuBarIconCache.image(named: iconName(active: activeCount > 0,
+                                                                   hasPending: hasPending)))
             if activeCount > 0 {
                 Text("\(activeCount)")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .monospacedDigit()
+                    .transition(.opacity.combined(with: .scale(scale: 0.88)))
             }
         }
+        .animation(H3.appleSnap, value: activeCount)
+        .animation(H3.appleSnap, value: hasPending)
     }
 
     private func iconName(active: Bool, hasPending: Bool) -> String {
@@ -30,12 +34,19 @@ struct MenuBarLabel: View {
         if hasPending { return "copylink" }
         return "catapultidle"
     }
+}
 
-    private func menuBarImage(_ name: String) -> NSImage {
-        guard let img = NSImage(named: name) else { return NSImage() }
-        let sized = img.copy() as! NSImage
+@MainActor
+private enum MenuBarIconCache {
+    private static var images: [String: NSImage] = [:]
+
+    static func image(named name: String) -> NSImage {
+        if let cached = images[name] { return cached }
+        guard let source = NSImage(named: name) else { return NSImage() }
+        let sized = (source.copy() as? NSImage) ?? source
         sized.size = NSSize(width: 18, height: 18)
         sized.isTemplate = true
+        images[name] = sized
         return sized
     }
 }
@@ -54,35 +65,55 @@ struct MenuBarRootView: View {
     @FocusState private var urlFieldFocused: Bool
     @State private var showVideoOptions = false
     @State private var showAudioOptions = false
+    @State private var appeared = false
+    @State private var dropTargeted = false
+    @State private var pocket = PocketServer.shared
 
     var body: some View {
         VStack(spacing: 0) {
             header
+                .applePopoverStage(appeared, delay: 0.00)
             Divider().opacity(0.4)
             inputCard
+                .applePopoverStage(appeared, delay: 0.04)
             Divider().opacity(0.4)
             contentBody
+                .applePopoverStage(appeared, delay: 0.08)
             Divider().opacity(0.4)
             footer
+                .applePopoverStage(appeared, delay: 0.12)
         }
-        .frame(width: 440)
-        .frame(minHeight: 220, maxHeight: 640)
+        .frame(width: dropTargeted ? 408 : 440)
+        .frame(minHeight: popoverMinHeight, maxHeight: dropTargeted ? 520 : 700)
         .fixedSize(horizontal: false, vertical: true)
         .background(backgroundLayer)
+        .clipShape(RoundedRectangle(cornerRadius: dropTargeted ? 18 : 0, style: .continuous))
+        .scaleEffect(dropTargeted ? 0.965 : 1, anchor: .top)
+        .overlay {
+            if dropTargeted {
+                DropTargetOverlay()
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
         // Accept URLs dragged from Safari, Messages, Notes, etc. Dropping a
         // link anywhere on the popover enqueues it as a video download.
         .onDrop(of: [.url, .text, .fileURL],
-                isTargeted: nil,
+                isTargeted: $dropTargeted,
                 perform: handleDrop(providers:))
+        .animation(H3.appleSnap, value: dropTargeted)
         .onAppear {
             if let url = clipboard.detectedURL { manualURL = url }
             urlFieldFocused = true
+            withAnimation(H3.appleDrift.delay(0.02)) { appeared = true }
             if !settings.hasCompletedOnboarding {
                 OnboardingLauncher.present()
             }
         }
+        .onDisappear { appeared = false }
         .onChange(of: clipboard.detectedURL) { _, new in
-            if let new { manualURL = new }
+            if let new {
+                withAnimation(H3.appleSnap) { manualURL = new }
+            }
         }
         .background(
             EscKeyCatcher {
@@ -93,19 +124,29 @@ struct MenuBarRootView: View {
         )
     }
 
+    private var popoverMinHeight: CGFloat {
+        if dropTargeted { return 210 }
+        if downloads.items.isEmpty && clipboard.detectedURL == nil { return 222 }
+        return 260
+    }
+
     // MARK: Header
 
     private var header: some View {
         HStack(spacing: 10) {
             AppIconView(size: 34)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Catapult")
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                Text(statusSubtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                if let statusSubtitle {
+                    Text(statusSubtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer()
+            catapocketMenu
             Button {
                 openSettings()
                 NSApp.activate(ignoringOtherApps: true)
@@ -133,7 +174,6 @@ struct MenuBarRootView: View {
                 Button("Check for Updates…") {
                     UpdateController.shared.checkForUpdates()
                 }
-                .disabled(!UpdateController.shared.canCheckForUpdates)
                 Divider()
                 Button("Quit Catapult") { NSApp.terminate(nil) }
             } label: {
@@ -149,12 +189,68 @@ struct MenuBarRootView: View {
         .padding(.vertical, 12)
     }
 
-    private var statusSubtitle: String {
+    private var catapocketMenu: some View {
+        Menu {
+            Text(catapocketMenuStatus)
+            Divider()
+            Button("Open Catapocket") {
+                if let url = pocket.publicURL {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .disabled(!settings.pocketRemoteEnabled || pocket.publicURL == nil)
+            Button("Copy Catapocket URL") {
+                copyToPasteboard(pocket.publicURLString)
+            }
+            .disabled(!settings.pocketRemoteEnabled)
+            Divider()
+            Button(settings.pocketRemoteEnabled ? "Turn Off Catapocket" : "Turn On Catapocket") {
+                settings.pocketRemoteEnabled.toggle()
+                pocket.applySettings()
+            }
+            Button("Catapocket Settings") {
+                openSettings()
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                    .font(.system(size: 14, weight: .medium))
+                Circle()
+                    .fill(catapocketStatusColor)
+                    .frame(width: 6, height: 6)
+                    .offset(x: 2, y: -2)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .foregroundStyle(.secondary)
+        .help("Catapocket")
+    }
+
+    private var catapocketMenuStatus: String {
+        if settings.pocketRemoteEnabled, pocket.isRunning {
+            return "Catapocket connected"
+        }
+        if settings.pocketRemoteEnabled {
+            return "Catapocket starting"
+        }
+        return "Catapocket off"
+    }
+
+    private var catapocketStatusColor: Color {
+        if settings.pocketRemoteEnabled, pocket.isRunning { return .green }
+        if settings.pocketRemoteEnabled { return .orange }
+        return .secondary.opacity(0.65)
+    }
+
+    private var statusSubtitle: String? {
         switch dependencies.state {
         case .unknown, .checking: return "Checking dependencies…"
         case .downloading(let name, let p): return "Downloading \(name) (\(Int(p * 100))%)"
         case .installing(let name): return "Installing \(name)…"
-        case .ready: return "Ready"
+        case .ready: return nil
         case .error(let msg): return msg
         }
     }
@@ -166,7 +262,7 @@ struct MenuBarRootView: View {
             HStack(spacing: 8) {
                 Image(systemName: "link")
                     .foregroundStyle(.secondary)
-                TextField("Paste a YouTube link…", text: $manualURL)
+                TextField("Paste a video link…", text: $manualURL)
                     .textFieldStyle(.plain)
                     .focused($urlFieldFocused)
                     .onSubmit { startDownload(mode: .video) }
@@ -201,7 +297,7 @@ struct MenuBarRootView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 14, height: 14)
                         .foregroundStyle(Color.accentColor)
-                    Text("Detected on clipboard")
+                    Text(SupportedSite.match(url: clipURL).clipboardDetectionLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -222,6 +318,7 @@ struct MenuBarRootView: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(Color.accentColor.opacity(0.12))
                 )
+                .transition(.opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98)))
             }
 
             HStack(spacing: 8) {
@@ -255,6 +352,7 @@ struct MenuBarRootView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
+        .animation(H3.appleSnap, value: clipboard.detectedURL)
     }
 
     // MARK: Body (download list)
@@ -268,12 +366,14 @@ struct MenuBarRootView: View {
                 VStack(spacing: 6) {
                     ForEach(downloads.items) { item in
                         DownloadRowView(item: item)
+                            .transition(.opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98)))
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
             }
             .frame(maxHeight: 340)
+            .animation(H3.appleSnap, value: downloads.items.map(\.id))
         }
     }
 
@@ -289,8 +389,14 @@ struct MenuBarRootView: View {
                 .truncationMode(.tail)
             Spacer()
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.background.opacity(0.46))
+        )
         .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
     }
 
     // MARK: Footer
@@ -388,8 +494,7 @@ struct MenuBarRootView: View {
 
     private func runPreset(_ preset: DevicePreset) {
         let pb = NSPasteboard.general.string(forType: .string) ?? ""
-        let url = ClipboardMonitor.firstYouTubeURL(in: pb)
-            ?? ClipboardMonitor.firstURL(in: pb)
+        let url = ClipboardMonitor.firstDownloadURL(in: pb)
             ?? manualURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return }
         var overrides = DownloadOverrides()
@@ -399,10 +504,15 @@ struct MenuBarRootView: View {
         clipboard.clearDetected()
     }
 
+    private func copyToPasteboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
     private func runQuick(_ action: QuickAction) {
         let pb = NSPasteboard.general.string(forType: .string) ?? ""
-        let url = ClipboardMonitor.firstYouTubeURL(in: pb)
-            ?? ClipboardMonitor.firstURL(in: pb)
+        let url = ClipboardMonitor.firstDownloadURL(in: pb)
             ?? manualURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return }
 
@@ -434,8 +544,7 @@ struct MenuBarRootView: View {
     }
 
     private func startDownload(mode: DownloadMode) {
-        guard let url = ClipboardMonitor.firstURL(in: manualURL)
-            ?? ClipboardMonitor.firstYouTubeURL(in: manualURL)
+        guard let url = ClipboardMonitor.firstDownloadURL(in: manualURL)
             ?? Optional(manualURL.trimmingCharacters(in: .whitespacesAndNewlines)),
               !url.isEmpty else { return }
         downloads.enqueue(url: url, mode: mode)
@@ -466,8 +575,7 @@ struct MenuBarRootView: View {
                         return nil
                     }()
                     guard let s,
-                          let picked = ClipboardMonitor.firstYouTubeURL(in: s)
-                                    ?? ClipboardMonitor.firstURL(in: s)
+                          let picked = ClipboardMonitor.firstDownloadURL(in: s)
                     else { return }
                     Task { @MainActor in enqueueDropped(urlString: picked) }
                 }
@@ -490,7 +598,8 @@ struct MenuBarRootView: View {
     }
 
     private func startCut() {
-        let url = manualURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = ClipboardMonitor.firstDownloadURL(in: manualURL)
+            ?? manualURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return }
         CutCoordinator.shared.pendingURL = url
         openWindow(id: "cut")
@@ -509,37 +618,142 @@ struct ActionButton: View {
     var longPress: (() -> Void)? = nil
 
     @State private var hovering = false
+    @State private var pressing = false
+    @State private var pressBeganAt: Date?
+    @State private var movedDuringPress = false
+    @State private var longPressFired = false
+    @State private var pressToken = UUID()
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                Text(title)
-            }
-            .font(.system(size: 12, weight: .semibold))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(filled
-                          ? tint.opacity(hovering ? 1 : 0.9)
-                          : tint.opacity(hovering ? 0.22 : 0.12))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(tint.opacity(filled ? 0 : 0.35), lineWidth: 0.5)
-            }
-            .foregroundStyle(filled ? Color.white : tint)
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+            Text(title)
         }
-        .buttonStyle(.plain)
+        .font(.system(size: 12, weight: .semibold))
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(filled
+                      ? tint.opacity(hovering ? 1 : 0.9)
+                      : tint.opacity(hovering ? 0.22 : 0.12))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(tint.opacity(filled ? 0 : 0.35), lineWidth: 0.5)
+        }
+        .foregroundStyle(filled ? Color.white : tint)
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.35).onEnded { _ in
-                longPress?()
-            }
+        .scaleEffect(pressing ? 0.985 : (hovering ? 1.012 : 1))
+        .shadow(color: tint.opacity(hovering && filled ? 0.22 : 0), radius: 9, y: 3)
+        .animation(H3.appleSnap, value: hovering)
+        .animation(H3.appleSnap, value: pressing)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged(handlePressChanged)
+                .onEnded(handlePressEnded)
         )
         .help(longPress != nil ? "\(title) — hold for options" : title)
+        .accessibilityLabel(title)
+    }
+
+    private func handlePressChanged(_ value: DragGesture.Value) {
+        if pressBeganAt == nil {
+            let token = UUID()
+            pressToken = token
+            pressBeganAt = Date()
+            movedDuringPress = false
+            longPressFired = false
+            pressing = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                guard pressToken == token,
+                      pressing,
+                      !movedDuringPress,
+                      !longPressFired else { return }
+                longPressFired = true
+                longPress?()
+            }
+        }
+        if abs(value.translation.width) > 5 || abs(value.translation.height) > 5 {
+            movedDuringPress = true
+        }
+    }
+
+    private func handlePressEnded(_ value: DragGesture.Value) {
+        defer {
+            pressing = false
+            pressBeganAt = nil
+            movedDuringPress = false
+            longPressFired = false
+            pressToken = UUID()
+        }
+        let heldFor = Date().timeIntervalSince(pressBeganAt ?? Date())
+        let moved = movedDuringPress
+            || abs(value.translation.width) > 5
+            || abs(value.translation.height) > 5
+        guard heldFor < 0.35, !moved, !longPressFired else { return }
+        action()
+    }
+}
+
+private struct ApplePopoverStage: ViewModifier {
+    let appeared: Bool
+    let delay: Double
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(appeared ? 1 : 0)
+            .blur(radius: appeared ? 0 : 6)
+            .scaleEffect(appeared ? 1 : 0.985, anchor: .top)
+            .offset(y: appeared ? 0 : 6)
+            .animation(H3.appleDrift.delay(delay), value: appeared)
+    }
+}
+
+private extension View {
+    func applePopoverStage(_ appeared: Bool, delay: Double) -> some View {
+        modifier(ApplePopoverStage(appeared: appeared, delay: delay))
+    }
+}
+
+private struct DropTargetOverlay: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+            VStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(H3.blue50)
+                    Image(systemName: "plus")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(H3.blue400)
+                }
+                .frame(width: 54, height: 54)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.84), lineWidth: 1)
+                )
+                Text("drop to add")
+                    .font(H3.body(size: 15, weight: .semibold))
+                    .foregroundStyle(H3.ink900)
+                Text("drag away to cancel")
+                    .font(H3.body(size: 11))
+                    .foregroundStyle(H3.ink500)
+            }
+            .padding(22)
+            .background(
+                RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
+                    .fill(H3.cardFill.opacity(0.86))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
+                    .stroke(H3.cardStroke, lineWidth: 1)
+            )
+            .shadow(color: H3.shadowDrop.opacity(0.18), radius: 24, y: 12)
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -620,12 +834,18 @@ struct DownloadRowView: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(.quaternary)
             if let t = item.thumbnailURL {
-                AsyncImage(url: t) { phase in
-                    if let img = phase.image {
-                        img.resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        Image(systemName: "play.rectangle")
-                            .foregroundStyle(.secondary)
+                if t.isFileURL, let image = NSImage(contentsOf: t) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    AsyncImage(url: t) { phase in
+                        if let img = phase.image {
+                            img.resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            Image(systemName: "play.rectangle")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             } else {

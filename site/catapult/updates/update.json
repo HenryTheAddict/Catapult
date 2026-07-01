@@ -1,0 +1,15 @@
+{
+  "version": "1.1.4",
+  "build": "48",
+  "minimumSystemVersion": "13.0",
+  "publishedAt": "2026-06-29T13:26:49Z",
+  "name": "Catapult 1.1.4",
+  "notes": "Maps the update site to h3nry.xyz/catapult, keeps installed CLIs fresh after app updates, and improves CLI diagnostics, Pocket helpers, and size-limited downloads.",
+  "dmgURL": "https://h3nry.xyz/catapult/Catapult.dmg",
+  "releaseNotesURL": "https://h3nry.xyz/catapult/",
+  "dmgSHA256": "44f5b9ab9002e11672c321c5d4b54e4803a0d287b84eae8eabe35ae3e267a83e",
+  "dmgSizeBytes": 10823410,
+  "upsweetURL": "https://h3nry.xyz/catapult/Catapult.upsweet",
+  "upsweetSHA256": "0f6bfe6bdff3f77ea4adb8ab97686612ac030897f053b3b79ec60a3ce2cf4ad9",
+  "upsweetSizeBytes": 9056298
+}
