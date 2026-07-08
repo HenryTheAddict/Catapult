@@ -718,9 +718,19 @@ final class DownloadManager {
                     "--audio-quality", String(settings.audioQualityKbps) + "K",
                 ])
                 if settings.normalizeAudio {
+                    let codec: String? = {
+                        switch audioFmt {
+                        case .mp3:  return "libmp3lame"
+                        case .m4a:  return "aac"
+                        case .opus: return "libopus"
+                        case .flac: return "flac"
+                        case .wav:  return nil
+                        }
+                    }()
+                    let codecArg = codec != nil ? "-c:a \(codec!) " : ""
                     args.append(contentsOf: [
                         "--ppa",
-                        "ExtractAudio+ffmpeg_o1:-af \(Self.loudnessNormalizeFilter)"
+                        "ExtractAudio+ffmpeg_o1:\(codecArg)-af \(Self.loudnessNormalizeFilter)"
                     ])
                 }
                 if let rangeValues = validCutRange {

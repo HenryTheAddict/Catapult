@@ -12,8 +12,8 @@
       <sparkle:shortVersionString>1.1.5</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <sparkle:releaseNotesLink>https://h3nry.xyz/catapult/</sparkle:releaseNotesLink>
-      <description>Maps the update site to h3nry.xyz/catapult, keeps installed CLIs fresh after app updates, and improves CLI diagnostics, Pocket helpers, and size-limited downloads.</description>
-      <pubDate>Wed, 08 Jul 2026 17:21:55 +0000</pubDate>
+      <description>Latest Catapult release for macOS.</description>
+      <pubDate>Wed, 08 Jul 2026 19:32:09 +0000</pubDate>
       <enclosure
         url="https://h3nry.xyz/catapult/Catapult.upsweet"
         sparkle:version="49"
