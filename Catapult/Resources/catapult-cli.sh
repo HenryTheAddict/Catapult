@@ -134,6 +134,15 @@ normalize_audio() {
 audio_loudnorm_filter() {
     printf '%s' 'loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000'
 }
+audio_codec_override() {
+    case "$1" in
+        mp3)  printf '%s' "libmp3lame" ;;
+        m4a)  printf '%s' "aac" ;;
+        opus) printf '%s' "libopus" ;;
+        flac) printf '%s' "flac" ;;
+        *)    printf "" ;;
+    esac
+}
 video_normalize_codec_args() {
     printf '%s' "-c:v copy -c:a aac -b:a $(audio_quality)k -af $(audio_loudnorm_filter)"
 }
@@ -453,7 +462,10 @@ action_audio() {
         printf -- '--audio-format\n%s\n' "$(audio_format)"
         printf -- '--audio-quality\n%sK\n' "$(audio_quality)"
         if normalize_audio; then
-            printf -- '--ppa\nExtractAudio+ffmpeg_o1:-af %s\n' "$(audio_loudnorm_filter)"
+            local codec; codec=$(audio_codec_override "$(audio_format)")
+            local codec_arg=""
+            if [[ -n "$codec" ]]; then codec_arg="-c:a ${codec} "; fi
+            printf -- '--ppa\nExtractAudio+ffmpeg_o1:%s-af %s\n' "$codec_arg" "$(audio_loudnorm_filter)"
         fi
         if audio_supports_thumbnail; then
             printf -- '--embed-thumbnail\n--convert-thumbnails\njpg\n'
@@ -724,7 +736,12 @@ if [[ $# -gt 0 ]]; then
             ensure_ytdlp && { { build_common_args "$url"; \
                 printf -- '-f\nbestaudio/best\n-x\n--audio-format\n%s\n--audio-quality\n%sK\n' \
                     "$(audio_format)" "$(audio_quality)"; \
-                if normalize_audio; then printf -- '--ppa\nExtractAudio+ffmpeg_o1:-af %s\n' "$(audio_loudnorm_filter)"; fi; \
+                if normalize_audio; then
+                    local codec; codec=$(audio_codec_override "$(audio_format)")
+                    local codec_arg=""
+                    if [[ -n "$codec" ]]; then codec_arg="-c:a ${codec} "; fi
+                    printf -- '--ppa\nExtractAudio+ffmpeg_o1:%s-af %s\n' "$codec_arg" "$(audio_loudnorm_filter)"
+                fi; \
                 if audio_supports_thumbnail; then printf -- '--embed-thumbnail\n--convert-thumbnails\njpg\n--ppa\nEmbedThumbnail+ffmpeg_o1:-c:v mjpeg\n'; fi; \
                 printf -- '%s\n' "$url"; } | run_ytdlp; }
             ;;
