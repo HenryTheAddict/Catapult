@@ -14,7 +14,7 @@ readonly SUPPORT_DIR="$HOME/Library/Application Support/Catapult"
 readonly BIN_DIR="$SUPPORT_DIR/bin"
 readonly YTDLP="$BIN_DIR/yt-dlp"
 readonly FFMPEG="$BIN_DIR/ffmpeg"
-readonly VERSION_FALLBACK="1.1.4"
+readonly VERSION_FALLBACK="1.1.5"
 INTERACTIVE=1
 
 # ── h3 palette (24-bit ANSI) ────────────────────────────────────────────────
