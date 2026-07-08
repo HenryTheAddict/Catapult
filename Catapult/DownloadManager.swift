@@ -1234,13 +1234,17 @@ final class DownloadManager {
             ])
             return
         }
-        if preferCompat, container == .mp4 {
-            // Force recode to H.264/AAC if source differs (AV1/VP9 → H.264).
-            args.append(contentsOf: ["--remux-video", "mp4"])
+        if container == .mp4 {
+            // Ensure audio is AAC when container is MP4 so it is playable on Apple devices.
+            args.append(contentsOf: ["--recode-video", "mp4"])
+            args.append(contentsOf: [
+                "--postprocessor-args",
+                "VideoConvertor:-c:v copy -c:a aac -b:a \(audioBitrateKbps)k"
+            ])
         }
     }
 
-    private static let loudnessNormalizeFilter = "loudnorm=I=-14:TP=-1.5:LRA=11"
+    private static let loudnessNormalizeFilter = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
 
     private static func addLoudnessNormalization(to ffmpegArgs: String, enabled: Bool) -> String {
         guard enabled, !ffmpegArgs.isEmpty else { return ffmpegArgs }

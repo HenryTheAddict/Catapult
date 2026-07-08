@@ -650,13 +650,14 @@ final class PocketServer {
             process.arguments = [
                 "-hide_banner", "-y",
                 "-i", input.path,
-                "-map", "0:v:0", "-map", "0:a?",
+                "-map", "0:v?", "-map", "0:a?",
                 "-c:v", "libx265",
                 "-tag:v", "hvc1",
                 "-preset", "medium",
                 "-crf", "28",
                 "-c:a", "aac",
                 "-b:a", "160k",
+                "-ar", "48000",
                 "-movflags", "frag_keyframe+empty_moov+faststart",
                 output.path
             ]
@@ -667,6 +668,7 @@ final class PocketServer {
                 "-vn",
                 "-c:a", "aac",
                 "-b:a", "192k",
+                "-ar", "48000",
                 output.path
             ]
         case .original:

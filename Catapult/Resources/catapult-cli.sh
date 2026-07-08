@@ -132,7 +132,7 @@ normalize_audio() {
     [[ "$(get_default normalizeAudio 1)" == "1" ]]
 }
 audio_loudnorm_filter() {
-    printf '%s' 'loudnorm=I=-14:TP=-1.5:LRA=11'
+    printf '%s' 'loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000'
 }
 video_normalize_codec_args() {
     printf '%s' "-c:v copy -c:a aac -b:a $(audio_quality)k -af $(audio_loudnorm_filter)"
@@ -402,7 +402,8 @@ action_video() {
             printf -- '--recode-video\nmp4\n'
             printf -- '--postprocessor-args\nVideoConvertor:%s\n' "$(video_normalize_codec_args)"
         else
-            prefer_compat && printf -- '--remux-video\nmp4\n'
+            printf -- '--recode-video\nmp4\n'
+            printf -- '--postprocessor-args\nVideoConvertor:-c:v copy -c:a aac -b:a %sk\n' "$(audio_quality)"
         fi
         printf -- '%s\n' "$url"
     } | run_ytdlp
@@ -429,7 +430,8 @@ action_small() {
             printf -- '--recode-video\nmp4\n'
             printf -- '--postprocessor-args\nVideoConvertor:%s\n' "$(video_normalize_codec_args)"
         else
-            prefer_compat && printf -- '--remux-video\nmp4\n'
+            printf -- '--recode-video\nmp4\n'
+            printf -- '--postprocessor-args\nVideoConvertor:-c:v copy -c:a aac -b:a %sk\n' "$(audio_quality)"
         fi
         printf -- '%s\n' "$url"
     } | run_ytdlp
