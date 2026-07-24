@@ -490,21 +490,6 @@ final class AppSettings {
     var copyFileAfterDownload: Bool {
         didSet { UserDefaults.standard.set(copyFileAfterDownload, forKey: "copyFileAfterDownload") }
     }
-    var pocketRemoteEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(pocketRemoteEnabled, forKey: "pocketRemoteEnabled")
-            Task { @MainActor in PocketServer.shared.applySettings() }
-        }
-    }
-    var pocketRemotePort: Int {
-        didSet {
-            UserDefaults.standard.set(pocketRemotePort, forKey: "pocketRemotePort")
-            Task { @MainActor in PocketServer.shared.applySettings() }
-        }
-    }
-    var pocketRemoteToken: String {
-        didSet { UserDefaults.standard.set(pocketRemoteToken, forKey: "pocketRemoteToken") }
-    }
     var filenameTemplate: String {
         didSet { UserDefaults.standard.set(filenameTemplate, forKey: "filenameTemplate") }
     }
@@ -599,16 +584,6 @@ final class AppSettings {
         self.concurrentFragments = (d.object(forKey: "concurrentFragments") as? Int) ?? 4
         self.openFolderOnFinish = (d.object(forKey: "openFolderOnFinish") as? Bool) ?? false
         self.copyFileAfterDownload = (d.object(forKey: "copyFileAfterDownload") as? Bool) ?? false
-        self.pocketRemoteEnabled = (d.object(forKey: "pocketRemoteEnabled") as? Bool) ?? true
-        self.pocketRemotePort = (d.object(forKey: "pocketRemotePort") as? Int) ?? 42173
-        if let storedPocketToken = d.string(forKey: "pocketRemoteToken") {
-            self.pocketRemoteToken = storedPocketToken
-        } else {
-            let generatedPocketToken = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-            self.pocketRemoteToken = generatedPocketToken
-            d.set(generatedPocketToken, forKey: "pocketRemoteToken")
-            d.synchronize()
-        }
         let storedPreset = FilenamePreset(rawValue: d.string(forKey: "filenamePreset") ?? "") ?? .normal
         self.filenamePreset = storedPreset
         self.filenameTemplate = d.string(forKey: "filenameTemplate")

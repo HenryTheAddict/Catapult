@@ -87,7 +87,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task { @MainActor in
             CLIInstaller.refreshIfInstalled()
-            PocketServer.shared.applySettings()
             await DependencyManager.shared.ensureInstalled()
             ClipboardMonitor.shared.start()
             SubscriptionManager.shared.start()

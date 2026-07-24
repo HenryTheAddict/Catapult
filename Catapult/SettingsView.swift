@@ -135,7 +135,6 @@ struct SettingsView: View {
         case .network: NetworkSettingsTab()
         case .sponsorBlock: SponsorBlockTab()
         case .sites: SitesTab()
-        case .pocket: PocketSettingsTab()
         case .subscriptions: SubscriptionsTab()
         case .devices: DevicePresetsTab()
         case .terminal: TerminalTab()
@@ -153,7 +152,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     case network
     case sponsorBlock
     case sites
-    case pocket
     case subscriptions
     case devices
     case terminal
@@ -171,7 +169,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .network: return "Network"
         case .sponsorBlock: return "SponsorBlock"
         case .sites: return "Sites"
-        case .pocket: return "Catapocket"
         case .subscriptions: return "Subscribe"
         case .devices: return "Devices"
         case .terminal: return "Terminal"
@@ -189,7 +186,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .network: return "globe"
         case .sponsorBlock: return "rectangle.on.rectangle.slash"
         case .sites: return "globe.americas.fill"
-        case .pocket: return "iphone.gen3.radiowaves.left.and.right"
         case .subscriptions: return "antenna.radiowaves.left.and.right"
         case .devices: return "gamecontroller"
         case .terminal: return "terminal"
@@ -204,7 +200,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .sponsorBlock, .advanced:
             return 18
-        case .dependencies, .devices, .pocket:
+        case .dependencies, .devices:
             return 19
         default:
             return 20
@@ -636,203 +632,7 @@ private struct GeneralSettingsTab: View {
     }
 }
 
-// MARK: - Catapocket
 
-private struct PocketSettingsTab: View {
-    @Environment(AppSettings.self) private var settings
-    @State private var pocket = PocketServer.shared
-
-    var body: some View {
-        @Bindable var s = settings
-        SettingsPage(title: "catapocket",
-                     subtitle: "iPhone-first local pairing for saving phone links to this Mac over Wi-Fi, with offline sync ready for the iOS app.") {
-            GeneralSettingsCard(title: "Remote") {
-                SettingsToggleRow(systemName: "iphone.gen3.radiowaves.left.and.right",
-                                  title: "Enable Catapocket remote",
-                                  detail: pocket.statusLine,
-                                  isOn: $s.pocketRemoteEnabled)
-                SettingsDivider()
-                SettingsNumberRow(systemName: "network",
-                                  title: "Port",
-                                  detail: "Keep this stable if you save Catapocket to your phone home screen.",
-                                  value: $s.pocketRemotePort,
-                                  range: 1024...65535)
-                SettingsDivider()
-                HStack(spacing: 12) {
-                    SettingsGlyph(systemName: "link")
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("iPhone URL")
-                            .font(H3.body(size: 13, weight: .semibold))
-                            .foregroundStyle(H3.ink900)
-                        Text(pocket.publicURLString)
-                            .font(H3.mono(size: 11))
-                            .foregroundStyle(H3.ink500)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Spacer(minLength: 12)
-                    SettingsIconButton(systemName: "doc.on.doc",
-                                       help: "Copy Catapocket URL") {
-                        copyToPasteboard(pocket.publicURLString)
-                    }
-                    SettingsIconButton(systemName: "arrow.up.right.square",
-                                       help: "Open Catapocket") {
-                        if let url = pocket.publicURL {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                }
-
-                if settings.pocketRemoteEnabled {
-                    SettingsDivider()
-                    HStack(alignment: .center, spacing: 14) {
-                        PocketQRCodeView(string: pocket.pairingPayloadString)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Scan with Catapocket on iPhone")
-                                .font(H3.body(size: 13, weight: .semibold))
-                                .foregroundStyle(H3.ink900)
-                            Text("Pairs this Mac with the local URL and private token. Safari can still open the URL above.")
-                                .font(H3.body(size: 11))
-                                .foregroundStyle(H3.ink500)
-                                .fixedSize(horizontal: false, vertical: true)
-                            SettingsMiniButton(title: "Copy pair code", systemName: "doc.on.doc") {
-                                copyToPasteboard(pocket.pairingPayloadString)
-                            }
-                            .padding(.top, 2)
-                        }
-                        Spacer()
-                    }
-                }
-            }
-
-            GeneralSettingsCard(title: "Catapocket Links") {
-                if pocket.links.isEmpty {
-                    HStack(spacing: 12) {
-                        SettingsGlyph(systemName: "tray")
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Nothing pocketed yet")
-                                .font(H3.body(size: 13, weight: .semibold))
-                                .foregroundStyle(H3.ink900)
-                            Text("Send a link from Catapocket and it will appear here.")
-                                .font(H3.body(size: 11))
-                                .foregroundStyle(H3.ink500)
-                        }
-                        Spacer()
-                    }
-                } else {
-                    ForEach(Array(pocket.links.enumerated()), id: \.element.id) { index, link in
-                        if index > 0 { SettingsDivider() }
-                        PocketLinkSettingsRow(link: link) {
-                            pocket.queue(link)
-                        } delete: {
-                            pocket.delete(link.id)
-                        }
-                    }
-                }
-            }
-
-            GeneralSettingsCard(title: "Security") {
-                HStack(spacing: 12) {
-                    SettingsGlyph(systemName: "key")
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Private token")
-                            .font(H3.body(size: 13, weight: .semibold))
-                            .foregroundStyle(H3.ink900)
-                        Text("Changing it invalidates old Catapocket links and QR codes.")
-                            .font(H3.body(size: 11))
-                            .foregroundStyle(H3.ink500)
-                    }
-                    Spacer(minLength: 12)
-                    SettingsMiniButton(title: "Reset", systemName: "arrow.triangle.2.circlepath") {
-                        pocket.resetToken()
-                    }
-                }
-            }
-        }
-        .onAppear {
-            pocket.applySettings()
-        }
-    }
-
-    private func copyToPasteboard(_ text: String) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-    }
-}
-
-private struct PocketLinkSettingsRow: View {
-    let link: PocketLink
-    let queue: () -> Void
-    let delete: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            SettingsGlyph(systemName: link.mode == .audio ? "music.note" : "play.rectangle")
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Text(link.title)
-                        .font(H3.body(size: 13, weight: .semibold))
-                        .foregroundStyle(H3.ink900)
-                        .lineLimit(1)
-                    if link.queuedAt != nil {
-                        Text("queued")
-                            .font(H3.body(size: 10, weight: .bold))
-                            .foregroundStyle(H3.green)
-                    }
-                }
-                Text("\(link.site.title) · \(link.mode.rawValue) · \(link.url)")
-                    .font(H3.body(size: 11))
-                    .foregroundStyle(H3.ink500)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 12)
-            SettingsIconButton(systemName: "arrow.down.circle",
-                               help: "Queue this link") {
-                queue()
-            }
-            SettingsIconButton(systemName: "trash",
-                               help: "Remove from Catapocket") {
-                delete()
-            }
-        }
-    }
-}
-
-private struct PocketQRCodeView: View {
-    let string: String
-
-    var body: some View {
-        if let image = Self.makeImage(from: string) {
-            Image(nsImage: image)
-                .interpolation(.none)
-                .resizable()
-                .frame(width: 118, height: 118)
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                        .fill(Color.white)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                        .stroke(H3.cardStroke, lineWidth: 1)
-                )
-        }
-    }
-
-    private static func makeImage(from string: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(string.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
-        let rep = NSCIImageRep(ciImage: scaled)
-        let image = NSImage(size: rep.size)
-        image.addRepresentation(rep)
-        return image
-    }
-}
 
 private struct GeneralSettingsCard<Content: View>: View {
     let title: String
@@ -1663,7 +1463,7 @@ private struct TerminalTab: View {
         ("capu audio <url>",              "extract audio"),
         ("capu thumb <url>",              "save the thumbnail"),
         ("capu cut <url> 0:12 0:42",      "clip a section"),
-        ("capu catapocket copy",          "copy the local Catapocket remote URL"),
+
         ("capu doctor",                   "check install, tools, and update route"),
         ("capu queue",                    "list recent downloads"),
     ]
@@ -2532,9 +2332,12 @@ private struct HistoryTab: View {
                         ForEach(Array(filtered.enumerated()), id: \.element.id) { index, entry in
                             HistoryRow(entry: entry)
                                 .contextMenu {
-                                    if entry.outputFile != nil, entry.fileExists {
-                                        Button("Reveal in Finder") {
+                                    if let fileURL = entry.outputFile, entry.fileExists {
+                                        Button("Show in Finder") {
                                             HistoryStore.shared.reveal(entry)
+                                        }
+                                        Button("Open in QuickTime") {
+                                            NSWorkspace.openInQuickTime(url: fileURL)
                                         }
                                     }
                                     Button("Copy source URL") {
