@@ -33,8 +33,5 @@
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
 
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Catapocket lets your phone send video links to this Mac over your local Wi-Fi network.</string>
-
 </dict>
 </plist>

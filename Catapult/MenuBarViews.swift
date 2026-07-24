@@ -67,7 +67,6 @@ struct MenuBarRootView: View {
     @State private var showAudioOptions = false
     @State private var appeared = false
     @State private var dropTargeted = false
-    @State private var pocket = PocketServer.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -146,7 +145,6 @@ struct MenuBarRootView: View {
                 }
             }
             Spacer()
-            catapocketMenu
             Button {
                 openSettings()
                 NSApp.activate(ignoringOtherApps: true)
@@ -189,61 +187,7 @@ struct MenuBarRootView: View {
         .padding(.vertical, 12)
     }
 
-    private var catapocketMenu: some View {
-        Menu {
-            Text(catapocketMenuStatus)
-            Divider()
-            Button("Open Catapocket") {
-                if let url = pocket.publicURL {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-            .disabled(!settings.pocketRemoteEnabled || pocket.publicURL == nil)
-            Button("Copy Catapocket URL") {
-                copyToPasteboard(pocket.publicURLString)
-            }
-            .disabled(!settings.pocketRemoteEnabled)
-            Divider()
-            Button(settings.pocketRemoteEnabled ? "Turn Off Catapocket" : "Turn On Catapocket") {
-                settings.pocketRemoteEnabled.toggle()
-                pocket.applySettings()
-            }
-            Button("Catapocket Settings") {
-                openSettings()
-                NSApp.activate(ignoringOtherApps: true)
-            }
-        } label: {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
-                    .font(.system(size: 14, weight: .medium))
-                Circle()
-                    .fill(catapocketStatusColor)
-                    .frame(width: 6, height: 6)
-                    .offset(x: 2, y: -2)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .foregroundStyle(.secondary)
-        .help("Catapocket")
-    }
 
-    private var catapocketMenuStatus: String {
-        if settings.pocketRemoteEnabled, pocket.isRunning {
-            return "Catapocket connected"
-        }
-        if settings.pocketRemoteEnabled {
-            return "Catapocket starting"
-        }
-        return "Catapocket off"
-    }
-
-    private var catapocketStatusColor: Color {
-        if settings.pocketRemoteEnabled, pocket.isRunning { return .green }
-        if settings.pocketRemoteEnabled { return .orange }
-        return .secondary.opacity(0.65)
-    }
 
     private var statusSubtitle: String? {
         switch dependencies.state {
@@ -809,8 +753,11 @@ struct DownloadRowView: View {
         )
         .contextMenu {
             if case .finished(let url?) = item.status {
-                Button("Reveal in Finder") {
+                Button("Show in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                Button("Open in QuickTime") {
+                    NSWorkspace.openInQuickTime(url: url)
                 }
             }
             if case .finished = item.status {
@@ -1103,5 +1050,17 @@ struct AudioQuickSettingsPopover: View {
         }
         .padding(14)
         .frame(width: 260)
+    }
+}
+
+// MARK: - Workspace Extensions
+
+extension NSWorkspace {
+    static func openInQuickTime(url: URL) {
+        if let qtURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.QuickTimePlayerX") {
+            NSWorkspace.shared.open([url], withApplicationAt: qtURL, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(url)
+        }
     }
 }

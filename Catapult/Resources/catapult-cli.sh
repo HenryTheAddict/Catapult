@@ -89,15 +89,6 @@ parallel_fragments() {
 quick_size_limit() {
     get_default "quickSizeLimitMB" "10"
 }
-pocket_enabled() {
-    [[ "$(get_default pocketRemoteEnabled 1)" == "1" ]]
-}
-pocket_port() {
-    get_default "pocketRemotePort" "42173"
-}
-pocket_token() {
-    get_default "pocketRemoteToken" ""
-}
 local_wifi_ip() {
     local ip
     ip=$(ipconfig getifaddr en0 2>/dev/null || true)
@@ -106,15 +97,7 @@ local_wifi_ip() {
     [[ -n "$ip" ]] || ip="127.0.0.1"
     printf '%s' "$ip"
 }
-pocket_url() {
-    local token
-    token=$(pocket_token)
-    if [[ -n "$token" ]]; then
-        printf 'http://%s:%s/?token=%s' "$(local_wifi_ip)" "$(pocket_port)" "$token"
-    else
-        printf 'http://%s:%s/' "$(local_wifi_ip)" "$(pocket_port)"
-    fi
-}
+
 prefer_compat() {
     # YES is stored as "1"
     [[ "$(get_default preferCompatibleCodecs 1)" == "1" ]]
@@ -574,26 +557,7 @@ action_settings() {
     press_any
 }
 
-action_pocket() {
-    local mode="${1:-}"
-    local url
-    url=$(pocket_url)
-    if pocket_enabled; then
-        printf "${C_BLUE}${BOLD}Catapocket remote${RST}\n"
-    else
-        printf "${C_RED}${BOLD}Catapocket remote is disabled in Catapult settings.${RST}\n"
-    fi
-    printf "%s\n" "$url"
-    if [[ "$mode" == "copy" || "$mode" == "--copy" ]]; then
-        if has_tool pbcopy; then
-            printf '%s' "$url" | pbcopy
-            printf "${C_GREEN}copied to clipboard.${RST}\n"
-        else
-            printf "${C_RED}pbcopy is not available here.${RST}\n"
-            return 1
-        fi
-    fi
-}
+
 
 action_doctor() {
     local app="/Applications/Catapult.app"
@@ -626,8 +590,6 @@ action_doctor() {
     printf "  small limit:        %s MB\n" "$(quick_size_limit)"
     printf "  update manifest:    https://h3nry.xyz/catapult/update.json\n"
     printf "  sitemap:            https://h3nry.xyz/catapult/sitemap.xml\n"
-    printf "  catapocket:         "
-    if pocket_enabled; then printf "%s\n" "$(pocket_url)"; else printf "disabled\n"; fi
 }
 
 # ── main loop ───────────────────────────────────────────────────────────────
@@ -645,8 +607,7 @@ main_menu() {
         menu_item "4" "◆" "just thumbnail" "[t]"
         menu_item "5" "✂" "cut a clip    " "[c]"
         menu_item "6" "▦" "recent files  " "[r]"
-        menu_item "7" "⌁" "catapocket    " "[p]"
-        menu_item "8" "⚙" "settings      " "[s]"
+        menu_item "7" "⚙" "settings      " "[s]"
         menu_item "q" "✕" "quit          " "[esc]"
         echo
         printf "  ${C_BLUE}›${RST} "
@@ -660,8 +621,7 @@ main_menu() {
             4|t|T) action_thumbnail ;;
             5|c|C) action_cut ;;
             6|r|R) action_queue ;;
-            7|p|P) banner; action_pocket; press_any ;;
-            8|s|S) action_settings ;;
+            7|s|S) action_settings ;;
             q|Q|$'\e') clear; exit 0 ;;
             *) : ;;
         esac
@@ -684,8 +644,6 @@ ${C_DIM}(everything below also works with the shorter 'capu' alias)${RST}
     catapult cut <url> <start> <end> clip a section
     catapult queue                   list recent downloads
     catapult settings                show current settings
-    catapult catapocket [copy]       show/copy the local Catapocket remote URL
-    catapult pocket [copy]           alias for catapocket
     catapult doctor                  check app, tools, PATH, and update route
     catapult open                    open the menu-bar app
     catapult --version               print the version
@@ -763,7 +721,6 @@ if [[ $# -gt 0 ]]; then
             ;;
         queue|recent|r) action_queue ;;
         settings|s) action_settings ;;
-        catapocket|pocket|p) shift; action_pocket "${1:-}" ;;
         doctor|diagnose) action_doctor ;;
         open) open -b "$APP_BUNDLE" 2>/dev/null || open "/Applications/Catapult.app" ;;
         *) usage; exit 1 ;;
