@@ -1,15 +1,15 @@
 {
-  "version": "1.1.5",
-  "build": "49",
+  "version": "1.1.6",
+  "build": "51",
   "minimumSystemVersion": "13.0",
-  "publishedAt": "2026-07-08T19:32:09Z",
-  "name": "Catapult 1.1.5",
-  "dmgURL": "https://h3nry.xyz/catapult/Catapult.dmg",
-  "releaseNotesURL": "https://h3nry.xyz/catapult/",
-  "notes": "Maps the update site to h3nry.xyz/catapult, keeps installed CLIs fresh after app updates, and improves CLI diagnostics, Pocket helpers, and size-limited downloads.",
-  "dmgSHA256": "4aa8fe40c779b9a0ea1fd8e5a875af6035ea00a5f92f111010f7c32ec1409663",
-  "dmgSizeBytes": 5949499,
-  "upsweetURL": "https://h3nry.xyz/catapult/Catapult.upsweet",
-  "upsweetSHA256": "ab73b470d52df6e77691f4536a82f46f36122faa3bec32efd47f772a80c383b0",
-  "upsweetSizeBytes": 8580423
+  "publishedAt": "2026-09-03T23:53:42Z",
+  "name": "Catapult 1.1.6",
+  "dmgURL": "https://github.com/HenryTheAddict/Catapult/releases/download/v1.1.6/Catapult.dmg",
+  "releaseNotesURL": "https://github.com/HenryTheAddict/Catapult/releases/tag/v1.1.6",
+  "notes": "Major download speed improvements (HTTP 10M chunking, throttled stream recovery, 8 parallel fragments), YouTube bot-check and player client fallbacks, automatic browser cookie handling with Helium/Safari support, CLI companion updates, and switch to GitHub Releases update channel.",
+  "upsweetURL": "https://github.com/HenryTheAddict/Catapult/releases/download/v1.1.6/Catapult.upsweet",
+  "upsweetSHA256": "28b31bd247abe2090538ae94623eb746af9f868f3267f28f1e56ee964450349c",
+  "upsweetSizeBytes": 8192193,
+  "dmgSHA256": "ecb432e749eef7cf3bfb2dedb8602d6728f2b0e2dd63fc72e317350e079bd5aa",
+  "dmgSizeBytes": 9921131
 }

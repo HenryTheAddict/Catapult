@@ -992,6 +992,18 @@ private struct NetworkSettingsTab: View {
                     .labelsHidden()
                     .frame(width: 220)
                 }
+                if s.cookieSource != .off {
+                    SettingsDivider()
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(H3.blue400)
+                            .font(.system(size: 12))
+                        Text("Active for \(s.siteCookies.count) site\(s.siteCookies.count == 1 ? "" : "s"). If downloads trip bot-checks, make sure you are signed in to \(s.cookieSource.label).")
+                            .font(H3.body(size: 11))
+                            .foregroundStyle(H3.ink500)
+                    }
+                    .padding(.top, 2)
+                }
             }
 
             GeneralSettingsCard(title: "Connection") {
@@ -1349,6 +1361,43 @@ private struct SitesTab: View {
     var body: some View {
         SettingsPage(title: "sites",
                      subtitle: "catapult works with anything yt-dlp supports. toggle cookies on for a site to pull them from the browser you picked in network settings — handy for private, age-gated, or members-only stuff.") {
+            HStack(spacing: 12) {
+                if settings.cookieSource == .off {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(H3.orange)
+                        Text("Browser cookies are off in Network tab")
+                            .font(H3.body(size: 11, weight: .medium))
+                            .foregroundStyle(H3.orange)
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "key.fill")
+                            .foregroundStyle(H3.blue400)
+                        Text("Importing from \(settings.cookieSource.label)")
+                            .font(H3.body(size: 11, weight: .semibold))
+                            .foregroundStyle(H3.ink900)
+                    }
+                }
+                Spacer()
+                Button("enable all") {
+                    settings.siteCookies = Set(SupportedSite.allCases)
+                }
+                .buttonStyle(.plain)
+                .font(H3.body(size: 11, weight: .medium))
+                .foregroundStyle(H3.blue400)
+
+                Text("·").foregroundStyle(H3.ink300)
+
+                Button("disable all") {
+                    settings.siteCookies.removeAll()
+                }
+                .buttonStyle(.plain)
+                .font(H3.body(size: 11, weight: .medium))
+                .foregroundStyle(H3.ink500)
+            }
+            .padding(.horizontal, 4)
+
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(SupportedSite.allCases) { site in
                     SiteCard(site: site)
@@ -2135,7 +2184,7 @@ private struct AboutTab: View {
                 HStack(spacing: 16) {
                     Link("yt-dlp", destination: URL(string: "https://github.com/yt-dlp/yt-dlp")!)
                     Link("ffmpeg", destination: URL(string: "https://ffmpeg.org")!)
-                    Link("updates", destination: URL(string: "https://h3nry.xyz/catapult/")!)
+                    Link("updates", destination: URL(string: "https://github.com/HenryTheAddict/Catapult/releases")!)
                 }
                 .font(H3.body(size: 12, weight: .semibold))
                 .foregroundStyle(H3.blue400)

@@ -91,7 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ClipboardMonitor.shared.start()
             SubscriptionManager.shared.start()
             if AppSettings.shared.autoUpdateYtDlpOnLaunch {
-                await DependencyManager.shared.updateYtDlp()
+                // Version-checked and throttled — only downloads when a newer
+                // yt-dlp actually exists, so launch stays fast.
+                await DependencyManager.shared.updateYtDlpIfNeeded()
             }
         }
         // First-run: show onboarding immediately on launch (not just after
@@ -110,6 +112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Single instance
 
     private func enforceSingleInstance() {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
+           ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil ||
+           ProcessInfo.processInfo.environment["XCInjectBundleInto"] != nil ||
+           NSClassFromString("XCTestCase") != nil {
+            return
+        }
         let me = ProcessInfo.processInfo.processIdentifier
         guard let bid = Bundle.main.bundleIdentifier else { return }
         let others = NSRunningApplication

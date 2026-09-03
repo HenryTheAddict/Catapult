@@ -4,22 +4,22 @@
      xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Catapult Updates</title>
-    <link>https://h3nry.xyz/catapult/</link>
-    <description>Static Catapult update feed for macOS.</description>
+    <link>https://github.com/HenryTheAddict/Catapult/releases</link>
+    <description>Catapult GitHub Releases feed for macOS.</description>
     <item>
-      <title>Catapult 1.1.5</title>
-      <sparkle:version>49</sparkle:version>
-      <sparkle:shortVersionString>1.1.5</sparkle:shortVersionString>
+      <title>Catapult 1.1.6</title>
+      <sparkle:version>51</sparkle:version>
+      <sparkle:shortVersionString>1.1.6</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://h3nry.xyz/catapult/</sparkle:releaseNotesLink>
-      <description>Latest Catapult release for macOS.</description>
-      <pubDate>Wed, 08 Jul 2026 19:32:09 +0000</pubDate>
+      <sparkle:releaseNotesLink>https://github.com/HenryTheAddict/Catapult/releases/tag/v1.1.6</sparkle:releaseNotesLink>
+      <description>Major download speed improvements (HTTP 10M chunking, throttled stream recovery, 8 parallel fragments), YouTube bot-check and player client fallbacks, automatic browser cookie handling with Helium/Safari support, CLI companion updates, and switch to GitHub Releases update channel.</description>
+      <pubDate>Thu, 03 Sep 2026 23:53:42 +0000</pubDate>
       <enclosure
-        url="https://h3nry.xyz/catapult/Catapult.upsweet"
-        sparkle:version="49"
-        sparkle:shortVersionString="1.1.5"
+        url="https://github.com/HenryTheAddict/Catapult/releases/download/v1.1.6/Catapult.upsweet"
+        sparkle:version="51"
+        sparkle:shortVersionString="1.1.6"
         sparkle:minimumSystemVersion="13.0"
-        length="8557146"
+        length="8192193"
         type="application/octet-stream" />
     </item>
   </channel>

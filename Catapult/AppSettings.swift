@@ -97,7 +97,8 @@ enum SponsorBlockMode: String, CaseIterable, Identifiable, Codable {
 }
 
 enum CookieSource: String, CaseIterable, Identifiable, Codable {
-    case off, safari, chrome, firefox, brave, edge
+    case off, safari, chrome, firefox, brave, edge, helium
+
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -107,11 +108,15 @@ enum CookieSource: String, CaseIterable, Identifiable, Codable {
         case .firefox: return "Firefox"
         case .brave:   return "Brave"
         case .edge:    return "Edge"
+        case .helium:  return "Helium"
         }
     }
+    /// Name passed to yt-dlp's `--cookies-from-browser`. Helium isn't in
+    /// yt-dlp's supported-browser set upstream, so it comes through an
+    /// exported cookie file instead (see HeliumCookieBridge).
     var ytdlpName: String? {
         switch self {
-        case .off: return nil
+        case .off, .helium: return nil
         default: return rawValue
         }
     }
@@ -520,7 +525,14 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
     }
     var cookieSource: CookieSource {
-        didSet { UserDefaults.standard.set(cookieSource.rawValue, forKey: "cookieSource") }
+        didSet {
+            UserDefaults.standard.set(cookieSource.rawValue, forKey: "cookieSource")
+            // If turning on cookies from off and no sites are currently enabled,
+            // enable all supported sites by default so cookies work immediately.
+            if cookieSource != .off && siteCookies.isEmpty {
+                siteCookies = Set(SupportedSite.allCases.filter { $0 != .generic })
+            }
+        }
     }
     var autoUpdateYtDlpOnLaunch: Bool {
         didSet { UserDefaults.standard.set(autoUpdateYtDlpOnLaunch, forKey: "autoUpdateYtDlpOnLaunch") }
@@ -542,10 +554,8 @@ final class AppSettings {
     var appearance: AppearanceOverride {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "appearance") }
     }
-    /// Per-site "use cookies" toggle. Sites in this set get the global
-    /// `cookieSource` applied when they're downloaded. This used to be a
-    /// browser-per-site picker — we simplified it to a single toggle because
-    /// almost nobody actually mixes browsers across sites.
+    /// Per-site "use cookies" toggle. When a global `cookieSource` is active,
+    /// enabled sites receive those cookies. Defaults to all supported sites.
     var siteCookies: Set<SupportedSite> {
         didSet {
             let arr = siteCookies.map(\.rawValue).sorted()
@@ -581,7 +591,7 @@ final class AppSettings {
         self.embedSubtitles = (d.object(forKey: "embedSubtitles") as? Bool) ?? false
         self.writeThumbnail = (d.object(forKey: "writeThumbnail") as? Bool) ?? false
         self.maxConcurrent = (d.object(forKey: "maxConcurrent") as? Int) ?? 2
-        self.concurrentFragments = (d.object(forKey: "concurrentFragments") as? Int) ?? 4
+        self.concurrentFragments = (d.object(forKey: "concurrentFragments") as? Int) ?? 8
         self.openFolderOnFinish = (d.object(forKey: "openFolderOnFinish") as? Bool) ?? false
         self.copyFileAfterDownload = (d.object(forKey: "copyFileAfterDownload") as? Bool) ?? false
         let storedPreset = FilenamePreset(rawValue: d.string(forKey: "filenamePreset") ?? "") ?? .normal
@@ -595,7 +605,7 @@ final class AppSettings {
         self.sponsorBlockCategories = Set(storedCats.compactMap { SponsorCategory(rawValue: $0) })
         self.hasCompletedOnboarding = (d.object(forKey: "hasCompletedOnboarding") as? Bool) ?? false
         self.cookieSource = CookieSource(rawValue: d.string(forKey: "cookieSource") ?? "") ?? .off
-        self.autoUpdateYtDlpOnLaunch = (d.object(forKey: "autoUpdateYtDlpOnLaunch") as? Bool) ?? false
+        self.autoUpdateYtDlpOnLaunch = (d.object(forKey: "autoUpdateYtDlpOnLaunch") as? Bool) ?? true
         self.autoCheckForUpdates     = (d.object(forKey: "autoCheckForUpdates") as? Bool) ?? true
         self.notificationSound = (d.object(forKey: "notificationSound") as? Bool) ?? true
         self.historyLimit = (d.object(forKey: "historyLimit") as? Int) ?? 50
@@ -611,6 +621,14 @@ final class AppSettings {
             for (k, v) in dict where v != "off" {
                 if let s = SupportedSite(rawValue: k) { sc.insert(s) }
             }
+        } else {
+            // First run: default all supported sites to enabled
+            sc = Set(SupportedSite.allCases.filter { $0 != .generic })
+        }
+        // Migration: If user previously chose a cookieSource != .off but siteCookies was empty,
+        // activate all sites so cookies don't silently do nothing.
+        if sc.isEmpty && (CookieSource(rawValue: d.string(forKey: "cookieSource") ?? "") ?? .off) != .off {
+            sc = Set(SupportedSite.allCases.filter { $0 != .generic })
         }
         self.siteCookies = sc
         self.rateLimitKBps = (d.object(forKey: "rateLimitKBps") as? Int) ?? 0
@@ -624,12 +642,13 @@ final class AppSettings {
         URL(fileURLWithPath: downloadFolderPath, isDirectory: true)
     }
 
-    /// Returns the effective cookie source for a given URL. Cookies are only
-    /// used when both a browser is selected globally and the matched site is
-    /// explicitly enabled in Settings > Sites.
+    /// Returns the effective cookie source for a given URL.
+    /// When a global cookie source is selected, cookies are supplied to enabled
+    /// supported sites and to unlisted/generic links.
     func cookieSource(for url: String) -> CookieSource {
+        guard cookieSource != .off else { return .off }
         let site = SupportedSite.match(url: url)
-        if siteCookies.contains(site), cookieSource != .off {
+        if site == .generic || siteCookies.contains(site) {
             return cookieSource
         }
         return .off
