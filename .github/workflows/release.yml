@@ -72,30 +72,6 @@ jobs:
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
           echo "upsweet=$UPSWEET" >> "$GITHUB_OUTPUT"
 
-      - name: publish github release
-        id: ghr
-        uses: softprops/action-gh-release@v2
-        with:
-          # Publish (not draft) so the static HTTPS update manifest can point
-          # at stable release asset URLs.
-          draft: false
-          name: Catapult ${{ steps.dmg.outputs.version }}
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          files: |
-            ${{ steps.dmg.outputs.dmg }}
-            ${{ steps.dmg.outputs.upsweet }}
-          body: |
-            ## catapult ${{ steps.dmg.outputs.version }}
-
-            menu-bar yt-dlp wrapper for macOS.
-
-            **install:** open `Catapult.dmg` and drag Catapult.app onto the
-            Applications shortcut.
-            in-app update checks read the HTTPS JSON manifest on the website.
-
-            ⚠️ this build is ad-hoc signed (no Developer ID / notarization).
-            on first launch, right-click the app → Open to bypass Gatekeeper.
-
       - name: write update manifest
         env:
           VERSION: ${{ steps.dmg.outputs.version }}
@@ -116,6 +92,29 @@ jobs:
             --notes "Latest Catapult release for macOS." \
             --published-at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
             --manifest-only
+
+      - name: publish github release
+        id: ghr
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          name: Catapult ${{ steps.dmg.outputs.version }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            ${{ steps.dmg.outputs.dmg }}
+            ${{ steps.dmg.outputs.upsweet }}
+            site/catapult/update.json
+            site/catapult/appcast.xml
+          body: |
+            ## catapult ${{ steps.dmg.outputs.version }}
+
+            menu-bar yt-dlp wrapper for macOS.
+
+            **install:** open `Catapult.dmg` and drag Catapult.app onto the Applications shortcut.
+            in-app updates are served directly from GitHub Releases.
+
+            ⚠️ this build is ad-hoc signed (no Developer ID / notarization).
+            on first launch, right-click the app → Open to bypass Gatekeeper.
 
       - name: upload static catapult folder
         uses: actions/upload-artifact@v4

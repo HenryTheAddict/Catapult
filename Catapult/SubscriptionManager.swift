@@ -297,14 +297,14 @@ final class SubscriptionManager {
             guard let html = String(data: data, encoding: .utf8) else { return nil }
             // externalId appears as "externalId":"UC…" somewhere in the
             // embedded ytInitialData JSON. Grab via a conservative regex.
-            let re = try NSRegularExpression(pattern: #""externalId":"(UC[A-Za-z0-9_-]+)""#)
+            let re = try NSRegularExpression(pattern: #"\"externalId\":\"(UC[A-Za-z0-9_-]+)\""#)
             let ns = html as NSString
             guard let m = re.firstMatch(in: html, range: NSRange(location: 0, length: ns.length)),
                   m.numberOfRanges >= 2 else { return nil }
             let id = ns.substring(with: m.range(at: 1))
             // Title via <meta property="og:title" content="…">
             var title = id
-            let tre = try NSRegularExpression(pattern: #"<meta property="og:title" content="([^"]+)""#)
+            let tre = try NSRegularExpression(pattern: #"<meta property=\"og:title\" content=\"([^\"]+)\""#)
             if let tm = tre.firstMatch(in: html, range: NSRange(location: 0, length: ns.length)),
                tm.numberOfRanges >= 2 {
                 title = ns.substring(with: tm.range(at: 1))
@@ -479,11 +479,16 @@ final class SubscriptionManager {
         let result = await Task.detached(priority: .utility) { () -> Result<String, Error> in
             let task = Process()
             task.executableURL = ytDlp
+            task.environment = DependencyManager.enhancedEnvironment
             task.arguments = [
                 "--flat-playlist",
                 "--dump-json",
                 "--playlist-end", "15",
                 "--no-warnings",
+                "--js-runtimes", "deno",
+                "--js-runtimes", "node",
+                "--js-runtimes", "bun",
+                "--js-runtimes", "quickjs",
                 sourceURL
             ]
             let pipe = Pipe()

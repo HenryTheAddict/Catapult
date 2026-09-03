@@ -143,3 +143,7 @@ copilot-instructions.local.md
 *.gcno
 *.gcda
 *.log
+
+# Python
+__pycache__/
+*.pyc

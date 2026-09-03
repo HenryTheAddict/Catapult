@@ -8,13 +8,14 @@
 
 set -u
 IFS=$'\n\t'
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.deno/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/Library/Application Support/Catapult/bin:$PATH"
 
 readonly APP_BUNDLE="h3nry.Catapult"
 readonly SUPPORT_DIR="$HOME/Library/Application Support/Catapult"
 readonly BIN_DIR="$SUPPORT_DIR/bin"
 readonly YTDLP="$BIN_DIR/yt-dlp"
 readonly FFMPEG="$BIN_DIR/ffmpeg"
-readonly VERSION_FALLBACK="1.1.5"
+readonly VERSION_FALLBACK="1.1.6"
 INTERACTIVE=1
 
 # ── h3 palette (24-bit ANSI) ────────────────────────────────────────────────
@@ -84,7 +85,7 @@ rate_limit() {
 }
 parallel_fragments() {
     # yt-dlp fragment concurrency for a single download. 1 means off/default.
-    get_default "concurrentFragments" "4"
+    get_default "concurrentFragments" "8"
 }
 quick_size_limit() {
     get_default "quickSizeLimitMB" "10"
@@ -196,10 +197,17 @@ cookie_source_for() {
     local site enabled global
     site=$(site_for_url "$url")
     global=$(cookie_source)
+    [[ -z "$global" || "$global" == "off" ]] && return 0
+    if [[ "$site" == "generic" ]]; then
+        echo "$global"
+        return 0
+    fi
     enabled=$(defaults read "$APP_BUNDLE" siteCookies 2>/dev/null \
         | tr -d '(),' | awk -v s="\"$site\"" '
             { gsub(/^[ \t]+|[ \t]+$/, "", $0); if ($0 == s) { print "yes"; exit } }')
-    if [[ -n "${enabled:-}" && "$global" != "off" ]]; then
+    local raw_sites
+    raw_sites=$(defaults read "$APP_BUNDLE" siteCookies 2>/dev/null || true)
+    if [[ -z "$raw_sites" || "$raw_sites" == *"()"* || -n "${enabled:-}" ]]; then
         echo "$global"
     fi
 }
@@ -303,11 +311,27 @@ build_common_args() {
     mkdir -p "$folder"
 
     printf -- '--newline\n--no-playlist\n--progress\n--no-mtime\n'
+    printf -- '--http-chunk-size\n10M\n--throttled-rate\n100K\n'
+    printf -- '--js-runtimes\ndeno\n--js-runtimes\nnode\n--js-runtimes\nbun\n--js-runtimes\nquickjs\n'
+    if [[ "$(site_for_url "$url")" == "youtube" ]]; then
+        printf -- '--extractor-args\nyoutube:player_client=default,ios,web_safari,web_embedded,-tv\n'
+    fi
     printf -- '-o\n%s\n' "$folder/$tmpl"
     if [[ -x "$FFMPEG" ]]; then
         printf -- '--ffmpeg-location\n%s\n' "$BIN_DIR"
     fi
-    [[ -n "$cookies" ]] && printf -- '--cookies-from-browser\n%s\n' "$cookies"
+    if [[ "$cookies" == "helium" ]]; then
+        # yt-dlp can't read helium natively — the macOS app exports a
+        # netscape cookie file the first time it downloads with helium.
+        local helium_file="$SUPPORT_DIR/cookies/helium.txt"
+        if [[ -f "$helium_file" ]]; then
+            printf -- '--cookies\n%s\n' "$helium_file"
+        else
+            printf "${C_DIM}  helium cookies get exported by the catapult app — run one download there first.${RST}\n" >&2
+        fi
+    elif [[ -n "$cookies" ]]; then
+        printf -- '--cookies-from-browser\n%s\n' "$cookies"
+    fi
     [[ -n "$proxy"   ]] && printf -- '--proxy\n%s\n' "$proxy"
     if [[ "$rate" =~ ^[0-9]+$ ]] && (( rate > 0 )); then
         printf -- '--limit-rate\n%sK\n' "$rate"
@@ -334,21 +358,47 @@ run_ytdlp() {
     rc=${PIPESTATUS[0]}
     echo
 
-    if (( rc != 0 )) && grep -qiE 'requested format is not available|sign in to confirm|age|private video|this account is private|login required|log in to|login to|cookies|members only' "$log"; then
-        # Drop any existing --cookies-from-browser arg the caller passed and
-        # retry with the configured browser only when cookies are enabled for
-        # this site's args.
+    # Phrase-precise matching — a bare 'age' or 'cookies' keyword used to
+    # match almost every yt-dlp failure ("usage", "package", "message"…).
+    local auth_error=0 cookie_error=0
+    if grep -qiE 'requested format is not available|sign in to confirm|confirm your age|age-restricted|private video|this account is private|login required|log in to|login to|members only' "$log"; then
+        auth_error=1
+    fi
+    if grep -qi 'failed to load cookies' "$log" || grep -qiE 'could not (copy|find|decrypt)[^[:cntrl:]]*cookies|cookies database' "$log"; then
+        cookie_error=1
+    fi
+
+    if (( rc != 0 && cookie_error )); then
+        # The cookie import itself broke (locked db, keychain denial).
+        # Public media still works without cookies — retry once, cookie-free.
+        local -a bare=()
+        local skip=0
+        for a in "${args[@]}"; do
+            if (( skip )); then skip=0; continue; fi
+            if [[ "$a" == "--cookies-from-browser" || "$a" == "--cookies" ]]; then skip=1; continue; fi
+            bare+=("$a")
+        done
+        printf "${C_SKY}  cookies couldn't be read — retrying without them…${RST}\n"
+        "$YTDLP_BIN" "${bare[@]}" 2>&1 | tee -a "$log"
+        rc=${PIPESTATUS[0]}
+        echo
+    elif (( rc != 0 && auth_error )); then
+        # Gated/private media: retry with the configured browser cookies,
+        # but only when the first pass didn't already include them.
         local configured_cookie=""
         local previous=""
         for a in "${args[@]}"; do
-            if [[ "$previous" == "--cookies-from-browser" ]]; then
-                configured_cookie="$a"
-                break
-            fi
+            if [[ "$previous" == "--cookies-from-browser" ]]; then configured_cookie="$a"; break; fi
+            if [[ "$previous" == "--cookies" ]]; then configured_cookie="file"; break; fi
             previous="$a"
         done
         if [[ -z "$configured_cookie" ]]; then
             printf "${C_DIM}  gated/private media needs cookies enabled for this site.${RST}\n"
+            return "$rc"
+        fi
+        if [[ "$configured_cookie" == "file" ]]; then
+            # The exported helium file was already in play — the failure is
+            # real (stale cookies or genuinely gated media).
             return "$rc"
         fi
         local -a retry=()
@@ -360,8 +410,8 @@ run_ytdlp() {
         done
         retry+=("--cookies-from-browser" "$configured_cookie")
         printf "${C_SKY}  looks gated — retrying with %s cookies…${RST}\n" "$configured_cookie"
-        "$YTDLP_BIN" "${retry[@]}"
-        rc=$?
+        "$YTDLP_BIN" "${retry[@]}" 2>&1 | tee -a "$log"
+        rc=${PIPESTATUS[0]}
         echo
     fi
 
@@ -588,8 +638,8 @@ action_doctor() {
     printf "  downloads:          %s\n" "$(download_folder)"
     printf "  parallel fragments: %s\n" "$(parallel_fragments)"
     printf "  small limit:        %s MB\n" "$(quick_size_limit)"
-    printf "  update manifest:    https://h3nry.xyz/catapult/update.json\n"
-    printf "  sitemap:            https://h3nry.xyz/catapult/sitemap.xml\n"
+    printf "  update manifest:    https://raw.githubusercontent.com/HenryTheAddict/Catapult/master/site/catapult/update.json\n"
+    printf "  releases:           https://github.com/HenryTheAddict/Catapult/releases\n"
 }
 
 # ── main loop ───────────────────────────────────────────────────────────────

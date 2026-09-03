@@ -26,8 +26,9 @@ from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / "Catapult.xcodeproj" / "project.pbxproj"
-BASE_URL = "https://h3nry.xyz/catapult"
-SITE_ORIGIN = "https://h3nry.xyz"
+BASE_URL = "https://github.com/HenryTheAddict/Catapult/releases/latest/download"
+RELEASE_REPO_URL = "https://github.com/HenryTheAddict/Catapult/releases"
+SITE_ORIGIN = "https://github.com/HenryTheAddict/Catapult"
 MANIFESTS = [
     ROOT / "site" / "catapult" / "update.json",
     ROOT / "site" / "catapult" / "updates" / "update.json",
@@ -163,9 +164,9 @@ def update_manifest(path: Path, version: str, build: str, notes: str | None,
         "minimumSystemVersion": str(data.get("minimumSystemVersion", "13.0")),
         "publishedAt": published_at,
         "name": f"Catapult {version}",
-        "upsweetURL": f"{BASE_URL}/Catapult.upsweet",
-        "dmgURL": f"{BASE_URL}/Catapult.dmg",
-        "releaseNotesURL": f"{BASE_URL}/",
+        "upsweetURL": f"https://github.com/HenryTheAddict/Catapult/releases/download/v{version}/Catapult.upsweet",
+        "dmgURL": f"https://github.com/HenryTheAddict/Catapult/releases/download/v{version}/Catapult.dmg",
+        "releaseNotesURL": f"https://github.com/HenryTheAddict/Catapult/releases/tag/v{version}",
     })
     if notes is not None:
         data["notes"] = notes
@@ -201,18 +202,18 @@ def update_appcast(path: Path, version: str, build: str, notes: str | None,
      xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Catapult Updates</title>
-    <link>{BASE_URL}/</link>
-    <description>Static Catapult update feed for macOS.</description>
+    <link>https://github.com/HenryTheAddict/Catapult/releases</link>
+    <description>Catapult GitHub Releases feed for macOS.</description>
     <item>
       <title>Catapult {escape(version)}</title>
       <sparkle:version>{escape(build)}</sparkle:version>
       <sparkle:shortVersionString>{escape(version)}</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>{escape(minimum)}</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>{BASE_URL}/</sparkle:releaseNotesLink>
+      <sparkle:releaseNotesLink>https://github.com/HenryTheAddict/Catapult/releases/tag/v{version}</sparkle:releaseNotesLink>
       <description>{escape(release_notes)}</description>
       <pubDate>{rfc2822_date(published_at)}</pubDate>
       <enclosure
-        url="{BASE_URL}/Catapult.upsweet"
+        url="https://github.com/HenryTheAddict/Catapult/releases/download/v{version}/Catapult.upsweet"
         sparkle:version="{escape(build)}"
         sparkle:shortVersionString="{escape(version)}"
         sparkle:minimumSystemVersion="{escape(minimum)}"

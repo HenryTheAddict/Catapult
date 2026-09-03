@@ -317,6 +317,12 @@ final class DownloadItem: Identifiable, Hashable {
     var forceCookieSource: CookieSource?
     // True once we've already auto-retried with cookies, so we don't loop.
     var cookiesAutoRetried: Bool = false
+    // True once we've retried without cookies after the cookie import
+    // itself broke (locked cookie DB, keychain denial), so we don't loop.
+    var cookieFallbackTried: Bool = false
+    // The raw yt-dlp error line, kept for retry classification (the
+    // user-facing statusLine gets humanized by parseProgress).
+    var lastRawError: String?
     // True once we've refreshed yt-dlp/ffmpeg after a failure, so we don't loop.
     var dependencyRepairAttempted: Bool = false
 
@@ -406,7 +412,9 @@ final class DownloadManager {
         item.progress = 0
         // Fresh manual retry gets a fresh shot at the cookie-fallback too.
         item.cookiesAutoRetried = false
+        item.cookieFallbackTried = false
         item.forceCookieSource = nil
+        item.lastRawError = nil
         item.dependencyRepairAttempted = false
         pendingIDs.append(item.id)
         drain()
@@ -506,12 +514,20 @@ final class DownloadManager {
         item.statusLine = "Fetching info…"
         let dep = DependencyManager.shared
         guard FileManager.default.fileExists(atPath: dep.ytDlpPath.path) else { return }
-        let settings = AppSettings.shared
         var args = ["--dump-single-json", "--no-warnings",
                     "--no-playlist", "--skip-download"]
-        if let browser = settings.cookieSource(for: item.ytdlpURL).ytdlpName {
-            args.append(contentsOf: ["--cookies-from-browser", browser])
+        args.append(contentsOf: [
+            "--js-runtimes", "deno",
+            "--js-runtimes", "node",
+            "--js-runtimes", "bun",
+            "--js-runtimes", "quickjs",
+        ])
+        if SupportedSite.match(url: item.ytdlpURL) == .youtube {
+            args.append(contentsOf: [
+                "--extractor-args", "youtube:player_client=default,ios,web_safari,web_embedded,-tv"
+            ])
         }
+        args.append(contentsOf: await CookieArgs.flags(for: item.ytdlpURL))
         args.append(item.ytdlpURL)
 
         let result: Data? = await withCheckedContinuation { cont in
@@ -519,6 +535,7 @@ final class DownloadManager {
                 let t = Process()
                 t.executableURL = dep.ytDlpPath
                 t.arguments = args
+                t.environment = DependencyManager.enhancedEnvironment
                 let out = Pipe()
                 t.standardOutput = out
                 t.standardError = Pipe()
@@ -554,63 +571,21 @@ final class DownloadManager {
             activeCount -= 1
             drain()
         }
+
+        let dep = DependencyManager.shared
+        guard FileManager.default.fileExists(atPath: dep.ytDlpPath.path) else {
+            item.status = .failed("yt-dlp is not installed yet")
+            item.statusLine = "Failed: yt-dlp missing"
+            HistoryStore.shared.record(item)
+            return
+        }
+
         item.status = .downloading
         item.statusLine = "Starting…"
 
         let settings = AppSettings.shared
-        let dep = DependencyManager.shared
-
         let folder = settings.downloadFolderURL
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-
-        // Device preset takes precedence over explicit quality/container
-        // overrides and the global defaults — it's an intentional recipe.
-        // Per-download preset wins; otherwise fall back to the app-wide
-        // default (which is usually `.none`).
-        let resolvedPreset: DevicePreset? = {
-            if let p = item.overrides.devicePreset, p != .none { return p }
-            if settings.defaultDevicePreset != .none { return settings.defaultDevicePreset }
-            return nil
-        }()
-        let preset = resolvedPreset
-        let presetHeightQuality: VideoQuality? = {
-            guard let h = preset?.heightCap else { return nil }
-            // Pick the smallest available VideoQuality ≥ heightCap so we
-            // don't pull down a 4K source just to scale it to 272p. Falls
-            // back to 360p for sub-360 retro targets.
-            let stops: [VideoQuality] = [.p360, .p480, .p720, .p1080, .p1440, .p2160]
-            return stops.first(where: { Int($0.rawValue) ?? 0 >= h }) ?? .p2160
-        }()
-        let quality   = presetHeightQuality
-                        ?? item.overrides.videoQuality
-                        ?? settings.videoQuality
-        let container = preset?.container
-                        ?? item.overrides.videoContainer
-                        ?? settings.videoContainer
-        let audioFmt  = item.overrides.audioFormat    ?? settings.audioFormat
-        let effectiveMaxMB = preset?.maxFilesizeMB ?? item.overrides.maxFilesizeMB
-
-        let validCutRange: (start: Double, end: Double)? = {
-            guard let s = item.cutStart,
-                  let e = item.cutEnd,
-                  s.isFinite,
-                  e.isFinite,
-                  s >= 0,
-                  e > s else { return nil }
-            return (s, e)
-        }()
-
-        // Output template — trimmed media gets a unique " (clip_<stamp>)" suffix that is
-        // renamed to " (clip)" / " (clip2)" / ... post-download.
-        var outputTemplate = folder
-            .appendingPathComponent(settings.filenameTemplate).path
-        if item.mode == .cut || validCutRange != nil {
-            let stamp = Int(Date().timeIntervalSince1970)
-            outputTemplate = outputTemplate.replacingOccurrences(
-                of: ".%(ext)s",
-                with: " (clip_\(stamp)).%(ext)s"
-            )
-        }
+        let outputTemplate = folder.path + "/" + settings.filenameTemplate
 
         var args: [String] = [
             "--newline",
@@ -619,7 +594,19 @@ final class DownloadManager {
             "-o", outputTemplate,
             "--ffmpeg-location", dep.binDirectory.path,
             "--no-mtime",
+            "--http-chunk-size", "10M",
+            "--throttled-rate", "100K",
+            "--js-runtimes", "deno",
+            "--js-runtimes", "node",
+            "--js-runtimes", "bun",
+            "--js-runtimes", "quickjs",
         ]
+
+        if SupportedSite.match(url: item.ytdlpURL) == .youtube {
+            args.append(contentsOf: [
+                "--extractor-args", "youtube:player_client=default,ios,web_safari,web_embedded,-tv"
+            ])
+        }
 
         if settings.concurrentFragments > 1 {
             args.append(contentsOf: ["--concurrent-fragments", "\(settings.concurrentFragments)"])
@@ -627,11 +614,18 @@ final class DownloadManager {
 
         // Cookies: a one-shot `forceCookieSource` (set by the auto-retry
         // path after an auth failure) takes precedence over the user's
-        // normal per-site / global resolution.
+        // normal per-site / global resolution. Helium isn't a browser
+        // yt-dlp can read, so it arrives as an exported cookie file.
         let cookieSrc = item.forceCookieSource ?? settings.cookieSource(for: item.ytdlpURL)
-        if let browser = cookieSrc.ytdlpName {
-            args.append(contentsOf: ["--cookies-from-browser", browser])
+        var cookieFlags: [String] = []
+        if cookieSrc != .off {
+            cookieFlags = await CookieArgs.flags(for: item.ytdlpURL, source: cookieSrc)
+            if cookieFlags.isEmpty {
+                item.statusLine = "Couldn't read \(cookieSrc.label) cookies — continuing without them."
+            }
         }
+        let usedCookies = !cookieFlags.isEmpty
+        args.append(contentsOf: cookieFlags)
 
         // Proxy (blank string means off)
         let proxy = settings.proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -646,113 +640,97 @@ final class DownloadManager {
 
         // Thumbnail-only short-circuits: skip media and just save the image.
         if item.mode == .thumbnailOnly {
-            let fmt = item.overrides.thumbnailFormat ?? "png"
             args.append(contentsOf: [
                 "--skip-download",
                 "--write-thumbnail",
-                "--convert-thumbnails", fmt,
+                "--convert-thumbnails", item.overrides.thumbnailFormat ?? "png",
             ])
             args.append(item.ytdlpURL)
         } else {
-            if settings.writeThumbnail { args.append("--write-thumbnail") }
-            let canEmbedThumbnail: Bool = {
-                switch item.mode {
-                case .audio:
-                    return audioFmt.supportsEmbeddedThumbnail
-                case .video, .cut:
-                    return container.supportsEmbeddedThumbnail
-                case .thumbnailOnly:
-                    return false
-                }
-            }()
-            if settings.embedThumbnail && canEmbedThumbnail {
-                args.append("--embed-thumbnail")
-                // Normalize WebP thumbnails before handing them to ffmpeg's
-                // artwork muxer.
-                args.append(contentsOf: ["--convert-thumbnails", "jpg"])
-                // Some containers need an explicit pp to tag the embedded image.
-                args.append(contentsOf: ["--ppa", "EmbedThumbnail+ffmpeg_o1:-c:v mjpeg"])
-                // Keep Shorts / VP9-only sources from ending as WebM when the
-                // chosen video container can carry embedded artwork.
-                if item.mode == .video || item.mode == .cut {
-                    args.append(contentsOf: ["--remux-video", container.rawValue])
-                }
-            }
+            // Video/audio metadata embedding
+            if settings.embedThumbnail { args.append("--embed-thumbnail") }
             if settings.embedMetadata  { args.append("--embed-metadata") }
             if settings.embedSubtitles {
-                args.append(contentsOf: ["--embed-subs", "--sub-langs", "en.*,en"])
-                args.append("--write-auto-subs")
+                args.append(contentsOf: ["--write-subs", "--write-auto-subs", "--embed-subs"])
             }
+            if settings.writeThumbnail { args.append("--write-thumbnail") }
 
-            // SponsorBlock integration
-            if settings.sponsorBlockMode != .off, !settings.sponsorBlockCategories.isEmpty {
-                let cats = settings.sponsorBlockCategories.map(\.rawValue).sorted().joined(separator: ",")
-                switch settings.sponsorBlockMode {
-                case .mark:   args.append(contentsOf: ["--sponsorblock-mark", cats])
-                case .remove: args.append(contentsOf: ["--sponsorblock-remove", cats])
-                case .off:    break
+            // SponsorBlock
+            if settings.sponsorBlockMode != .off && !settings.sponsorBlockCategories.isEmpty {
+                let cats = settings.sponsorBlockCategories.map(\.rawValue).joined(separator: ",")
+                if settings.sponsorBlockMode == .remove {
+                    args.append(contentsOf: ["--sponsorblock-remove", cats])
+                } else {
+                    args.append(contentsOf: ["--sponsorblock-mark", cats])
                 }
             }
+
+            // Quality & Container overrides
+            let quality = item.overrides.videoQuality ?? settings.videoQuality
+            let container = item.overrides.videoContainer ?? settings.videoContainer
+            let audioFormat = item.overrides.audioFormat ?? settings.audioFormat
+            let maxFilesizeMB = item.overrides.maxFilesizeMB
+
+            // Device preset (if one is active, it trumps raw quality/container settings)
+            let preset = item.overrides.devicePreset ?? (settings.defaultDevicePreset == .none ? nil : settings.defaultDevicePreset)
 
             switch item.mode {
-            case .video:
-                args.append(contentsOf: ["-f", videoFormatString(quality: quality,
-                                                                 container: container,
-                                                                 maxMB: effectiveMaxMB,
-                                                                 compat: settings.preferCompatibleCodecs)])
-                args.append(contentsOf: ["--merge-output-format", container.rawValue])
-                if let mb = effectiveMaxMB {
-                    args.append(contentsOf: ["--max-filesize", "\(mb)M"])
-                }
-                applyPresetPostprocess(preset: preset,
-                                       container: container,
-                                       preferCompat: settings.preferCompatibleCodecs,
-                                       normalizeAudio: settings.normalizeAudio,
-                                       audioBitrateKbps: settings.audioQualityKbps,
-                                       into: &args)
             case .audio:
                 args.append(contentsOf: [
-                    "-f", "bestaudio/best",
                     "-x",
-                    "--audio-format", audioFmt.rawValue,
-                    "--audio-quality", String(settings.audioQualityKbps) + "K",
+                    "--audio-format", audioFormat.rawValue,
+                    "--audio-quality", "\(settings.audioQualityKbps)K",
                 ])
                 if settings.normalizeAudio {
-                    let codec: String? = {
-                        switch audioFmt {
-                        case .mp3:  return "libmp3lame"
-                        case .m4a:  return "aac"
-                        case .opus: return "libopus"
-                        case .flac: return "flac"
-                        case .wav:  return nil
-                        }
-                    }()
-                    let codecArg = codec != nil ? "-c:a \(codec!) " : ""
                     args.append(contentsOf: [
-                        "--ppa",
-                        "ExtractAudio+ffmpeg_o1:\(codecArg)-af \(Self.loudnessNormalizeFilter)"
+                        "--postprocessor-args",
+                        "ExtractAudio+ffmpeg_o1:-af \(Self.loudnessNormalizeFilter)"
                     ])
                 }
-                if let rangeValues = validCutRange {
-                    let range = "*\(formatSec(rangeValues.start))-\(formatSec(rangeValues.end))"
-                    args.append(contentsOf: ["--download-sections", range])
-                }
-            case .cut:
-                args.append(contentsOf: ["-f", videoFormatString(quality: quality,
-                                                                 container: container,
-                                                                 maxMB: nil,
-                                                                 compat: settings.preferCompatibleCodecs)])
-                args.append(contentsOf: ["--merge-output-format", container.rawValue])
+
+            case .video:
+                let effectiveQuality: VideoQuality = {
+                    guard let cap = preset?.heightCap else { return quality }
+                    if let rawCap = Int(quality.rawValue), rawCap <= cap { return quality }
+                    switch cap {
+                    case ...240:  return .p360
+                    case ...360:  return .p360
+                    case ...480:  return .p480
+                    case ...720:  return .p720
+                    case ...1080: return .p1080
+                    case ...1440: return .p1440
+                    default:      return .p2160
+                    }
+                }()
+                let effectiveContainer = preset?.container ?? container
+                let effectiveMaxMB = preset?.maxFilesizeMB ?? maxFilesizeMB
+
+                let fmt = videoFormatString(quality: effectiveQuality,
+                                            container: effectiveContainer,
+                                            maxMB: effectiveMaxMB,
+                                            compat: settings.preferCompatibleCodecs)
+                args.append(contentsOf: ["-f", fmt])
+                args.append(contentsOf: ["--merge-output-format", effectiveContainer.rawValue])
+
                 applyPresetPostprocess(preset: preset,
-                                       container: container,
+                                       container: effectiveContainer,
                                        preferCompat: settings.preferCompatibleCodecs,
                                        normalizeAudio: settings.normalizeAudio,
                                        audioBitrateKbps: settings.audioQualityKbps,
                                        into: &args)
-                if let rangeValues = validCutRange {
-                    let range = "*\(formatSec(rangeValues.start))-\(formatSec(rangeValues.end))"
-                    args.append(contentsOf: ["--download-sections", range])
-                    args.append("--force-keyframes-at-cuts")
+
+            case .cut:
+                let effectiveQuality = quality
+                let effectiveContainer = container
+                let fmt = videoFormatString(quality: effectiveQuality,
+                                            container: effectiveContainer,
+                                            maxMB: maxFilesizeMB,
+                                            compat: settings.preferCompatibleCodecs)
+                args.append(contentsOf: ["-f", fmt])
+                args.append(contentsOf: ["--merge-output-format", effectiveContainer.rawValue])
+                if let s = item.cutStart, let e = item.cutEnd, e > s {
+                    let section = String(format: "*%.2f-%.2f", s, e)
+                    args.append(contentsOf: ["--download-sections", section])
                     args.append(contentsOf: [
                         "--postprocessor-args",
                         "Merger+ffmpeg_o1:-avoid_negative_ts make_zero -fflags +genpts"
@@ -765,10 +743,15 @@ final class DownloadManager {
             args.append(item.ytdlpURL)
         }
 
+        let validCutRange: (start: Double, end: Double)? = {
+            guard let s = item.cutStart, let e = item.cutEnd, e > s else { return nil }
+            return (s, e)
+        }()
+
         let task = Process()
         task.executableURL = dep.ytDlpPath
         task.arguments = args
-        task.environment = ProcessInfo.processInfo.environment
+        task.environment = DependencyManager.enhancedEnvironment
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         task.standardOutput = stdoutPipe
@@ -814,6 +797,13 @@ final class DownloadManager {
         }
 
         if task.terminationStatus == 0 {
+            if item.cookiesAutoRetried {
+                let site = SupportedSite.match(url: item.ytdlpURL)
+                if site != .generic {
+                    AppSettings.shared.siteCookies.insert(site)
+                }
+            }
+
             if (item.mode == .cut || item.mode == .audio),
                let src = finalPath ?? item.outputFile,
                let rangeValues = validCutRange {
@@ -850,11 +840,20 @@ final class DownloadManager {
             }
         } else if case .cancelled = item.status {
             // keep status
+        } else if shouldRetryWithoutCookies(item: item, usedCookies: usedCookies) {
+            // Cookie import itself broke (locked cookie DB, keychain denial).
+            // Public media still downloads fine without them — retry once,
+            // cookie-free, instead of dying on the import error.
+            item.cookieFallbackTried = true
+            item.forceCookieSource = .off
+            item.status = .queued
+            item.progress = 0
+            item.statusLine = "Cookies couldn't be read — retrying without them…"
+            pendingIDs.append(item.id)
         } else if shouldAutoRetryWithCookies(item: item, originalCookies: cookieSrc) {
             // Auto-fallback: this video likely needs auth (age-gated /
             // members-only / private / region-locked). Requeue once with
-            // the browser the user selected globally, but only when cookies
-            // are enabled for this matched site.
+            // the browser the user selected globally.
             item.cookiesAutoRetried = true
             item.forceCookieSource = AppSettings.shared.cookieSource
             item.status = .queued
@@ -916,44 +915,24 @@ final class DownloadManager {
         }
     }
 
-    private static func copyFileToPasteboard(_ file: URL) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        if !pasteboard.writeObjects([file as NSURL]) {
-            pasteboard.setString(file.path, forType: .string)
-        }
-    }
-
     private static func generateFallbackThumbnail(for file: URL,
                                                   itemID: UUID,
                                                   ffmpeg: URL) async -> URL? {
-        guard let dir = fallbackThumbnailDirectory() else { return nil }
-        let offsets: [Double] = [0.05, 0.25, 0.75, 1.5, 3.0]
+        guard let dir = thumbnailCacheDirectory() else { return nil }
+        let output = dir.appendingPathComponent("\(itemID.uuidString).jpg")
 
-        for (index, seconds) in offsets.enumerated() {
-            let candidate = dir.appendingPathComponent("\(itemID.uuidString)-\(index).jpg")
-            try? FileManager.default.removeItem(at: candidate)
-            guard await extractFrame(from: file,
-                                     at: seconds,
-                                     to: candidate,
-                                     ffmpeg: ffmpeg),
-                  FileManager.default.fileExists(atPath: candidate.path) else { continue }
-
-            if imageHasVisibleContent(candidate) {
-                return candidate
+        for timestamp in [1.0, 3.0, 5.0, 0.0] {
+            if await extractFrame(from: file, at: timestamp, to: output, ffmpeg: ffmpeg) {
+                if imageHasVisibleContent(output) {
+                    return output
+                }
             }
-            try? FileManager.default.removeItem(at: candidate)
         }
         return nil
     }
 
-    private static func fallbackThumbnailDirectory() -> URL? {
-        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory,
-                                                        in: .userDomainMask).first else {
-            return nil
-        }
-        let dir = appSupport
-            .appendingPathComponent("Catapult", isDirectory: true)
+    private static func thumbnailCacheDirectory() -> URL? {
+        let dir = DependencyManager.shared.supportDirectory
             .appendingPathComponent("thumbnails", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -971,6 +950,7 @@ final class DownloadManager {
             DispatchQueue.global(qos: .utility).async {
                 let task = Process()
                 task.executableURL = ffmpeg
+                task.environment = DependencyManager.enhancedEnvironment
                 var args = ["-y", "-hide_banner", "-loglevel", "error"]
                 if seconds > 0 {
                     args.append(contentsOf: ["-ss", String(format: "%.2f", seconds)])
@@ -1007,68 +987,114 @@ final class DownloadManager {
         let height = 18
         let bytesPerPixel = 4
         let bytesPerRow = width * bytesPerPixel
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
-        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+        var pixelData = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
 
-        let drew = pixels.withUnsafeMutableBytes { raw -> Bool in
-            guard let context = CGContext(data: raw.baseAddress,
-                                          width: width,
-                                          height: height,
-                                          bitsPerComponent: 8,
-                                          bytesPerRow: bytesPerRow,
-                                          space: colorSpace,
-                                          bitmapInfo: bitmapInfo) else {
-                return false
-            }
-            context.interpolationQuality = .low
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: &pixelData,
+                                      width: width,
+                                      height: height,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: bytesPerRow,
+                                      space: colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             return true
         }
-        guard drew else { return false }
 
-        var luminanceTotal = 0.0
-        var litPixels = 0
-        for offset in stride(from: 0, to: pixels.count, by: bytesPerPixel) {
-            let r = Double(pixels[offset]) / 255.0
-            let g = Double(pixels[offset + 1]) / 255.0
-            let b = Double(pixels[offset + 2]) / 255.0
-            let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-            luminanceTotal += luminance
-            if luminance > 0.08 {
-                litPixels += 1
-            }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        var totalLuminance: Double = 0
+        var totalVariance: Double = 0
+        let pixelCount = Double(width * height)
+
+        for i in stride(from: 0, to: pixelData.count, by: bytesPerPixel) {
+            let r = Double(pixelData[i])
+            let g = Double(pixelData[i + 1])
+            let b = Double(pixelData[i + 2])
+            totalLuminance += (0.299 * r + 0.587 * g + 0.114 * b)
         }
 
-        let sampleCount = Double(width * height)
-        let average = luminanceTotal / sampleCount
-        let litShare = Double(litPixels) / sampleCount
-        return average > 0.018 || litShare > 0.004
+        let mean = totalLuminance / pixelCount
+        guard mean > 10, mean < 245 else { return false }
+
+        for i in stride(from: 0, to: pixelData.count, by: bytesPerPixel) {
+            let r = Double(pixelData[i])
+            let g = Double(pixelData[i + 1])
+            let b = Double(pixelData[i + 2])
+            let l = 0.299 * r + 0.587 * g + 0.114 * b
+            totalVariance += abs(l - mean)
+        }
+
+        return (totalVariance / pixelCount) > 8
+    }
+
+    private static func copyFileToPasteboard(_ file: URL) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.writeObjects([file as NSURL])
+    }
+
+    // Identifies yt-dlp cookie extraction errors (syntax, keychain locked,
+    // browser DB locked, missing browser profile). Used to bail out cleanly
+    // to a no-cookie retry instead of dying on an unreadable cookie store.
+    private static func isCookieLoadFailure(_ msg: String) -> Bool {
+        let m = msg.lowercased()
+        return (m.contains("cookie") || m.contains("cookies")) &&
+            (m.contains("could not find") ||
+             m.contains("could not copy") ||
+             m.contains("could not read") ||
+             m.contains("keychain") ||
+             m.contains("database is locked") ||
+             m.contains("unable to read") ||
+             m.contains("failed to decrypt") ||
+             m.contains("could not find") ||
+             m.contains("could not decrypt") ||
+             m.contains("unable to extract"))
+    }
+
+    // One retry without cookies after a broken cookie import. Public videos
+    // then succeed; auth-gated ones surface their real (actionable) error.
+    private func shouldRetryWithoutCookies(item: DownloadItem, usedCookies: Bool) -> Bool {
+        guard usedCookies, !item.cookieFallbackTried else { return false }
+        guard let msg = item.lastRawError?.lowercased() else { return false }
+        return Self.isCookieLoadFailure(msg)
     }
 
     // Decide whether to auto-retry a failed download by forcing cookies.
     // Trigger when: the first attempt didn't use cookies, we haven't already
-    // auto-retried, and the error looks like an auth/format gate.
+    // auto-retried, and the error looks like an auth/format/bot gate.
     private func shouldAutoRetryWithCookies(item: DownloadItem,
                                             originalCookies: CookieSource) -> Bool {
         guard !item.cookiesAutoRetried else { return false }
+        guard !item.cookieFallbackTried else { return false }  // cookies are known-broken
         guard originalCookies == .off else { return false }
         guard AppSettings.shared.cookieSource != .off else { return false }
-        guard AppSettings.shared.siteCookies.contains(SupportedSite.match(url: item.ytdlpURL)) else { return false }
-        let msg = item.statusLine.lowercased()
+        if let raw = item.lastRawError?.lowercased(),
+           Self.isCookieLoadFailure(raw) {
+            return false
+        }
+        let msg = (item.statusLine + " " + (item.lastRawError ?? "")).lowercased()
         let markers = [
+            "no downloadable formats",
             "requested format is not available",
-            "sign in to confirm",
-            "age",
+            "human check",
+            "not a bot",
+            "sign in",
+            "confirm you’re not a bot",
+            "confirm you're not a bot",
+            "age-restricted",
+            "confirm your age",
+            "supporters-only",
             "private video",
+            "private or login-only",
             "this account is private",
             "login required",
             "log in to",
             "login to",
-            "cookies",
-            "this video is available for",
             "members only",
+            "members-only",
             "this live event",
+            "http error 403",
+            "403: forbidden"
         ]
         return markers.contains { msg.contains($0) }
     }
@@ -1094,6 +1120,10 @@ final class DownloadManager {
             "merger",
             "convert",
             "thumbnail",
+            "encoder",              // "Error opening output files: Encoder not found"
+            "error opening output", // broken/partial ffmpeg binary
+            "bad cpu type",         // wrong-arch binary (e.g. Intel ffmpeg, no Rosetta)
+            "exec format error",
             "no downloadable formats",
             "this video is unavailable"
         ]
@@ -1137,19 +1167,8 @@ final class DownloadManager {
                 let msg = line
                     .replacingOccurrences(of: "ERROR: ", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                // Humanize the most common one. "Requested format is not available"
-                // almost always means the video is age-gated / members-only /
-                // region-locked, or yt-dlp is stale.
-                if msg.contains("Requested format is not available") {
-                    item.statusLine = "No downloadable formats — try enabling cookies for this site, or update yt-dlp in the Dependencies tab."
-                } else if msg.contains("Sign in to confirm") || msg.contains("age") {
-                    item.statusLine = "Age-restricted — enable cookies in Settings › Sites to sign in."
-                } else if msg.localizedCaseInsensitiveContains("private") ||
-                          msg.localizedCaseInsensitiveContains("login") {
-                    item.statusLine = "Private or login-only video — enable cookies for this site in Settings › Sites."
-                } else {
-                    item.statusLine = msg
-                }
+                item.lastRawError = msg
+                item.statusLine = Self.friendlyError(for: msg)
             } else if let dest = Self.extract(regex: #"Destination:\s+(.+)"#, from: line) {
                 let p = dest.trimmingCharacters(in: .whitespaces)
                 item.outputFile = URL(fileURLWithPath: p)
@@ -1157,6 +1176,56 @@ final class DownloadManager {
                 item.outputFile = URL(fileURLWithPath: merged)
             }
         }
+    }
+
+    /// Humanizes the yt-dlp error lines people actually hit. Order matters:
+    /// "Sign in to confirm your age" contains both the age and bot phrases,
+    /// so age gates are matched first. Matching is phrase-precise — a bare
+    /// substring like "age" used to swallow "usage"/"message"/"package".
+    static func friendlyError(for msg: String) -> String {
+        let m = msg.lowercased()
+        let cookieSource = AppSettings.shared.cookieSource
+        let authTip: String
+        if cookieSource == .off {
+            authTip = "select your browser in Settings › Network (Cookies) to sign in"
+        } else {
+            authTip = "ensure you are signed in to this site in \(cookieSource.label)"
+        }
+
+        if m.contains("confirm your age") || m.contains("age-restricted") ||
+            m.contains("inappropriate for some users") {
+            return "Age-restricted — \(authTip)."
+        }
+        if m.contains("not a bot") || m.contains("sign in to confirm") || (m.contains("bot") && m.contains("sign in")) {
+            return "YouTube bot check — \(authTip)."
+        }
+        if m.contains("requested format is not available") {
+            return "No downloadable formats — try enabling cookies, or update yt-dlp in the Dependencies tab."
+        }
+        if isCookieLoadFailure(msg) {
+            return "Cookie import failed — check \(cookieSource == .off ? "your browser" : cookieSource.label) is installed & signed in, then retry."
+        }
+        if m.contains("members") && (m.contains("only") || m.contains("level")) {
+            return "Members-only video — \(authTip)."
+        }
+        if m.contains("this video is available for") {
+            return "Supporters-only or time-gated video — \(authTip)."
+        }
+        if m.contains("private video") || m.contains("this account is private") ||
+            m.contains("login required") || m.contains("log in to") || m.contains("login to") {
+            return "Private or login-only video — \(authTip)."
+        }
+        if m.contains("not available in your country") || m.contains("geo-restricted") {
+            return "Region-locked — this video isn't available from your network."
+        }
+        if m.contains("video unavailable") || m.contains("has been removed") ||
+            m.contains("no longer available") || m.contains("this video is unavailable") {
+            return "Video unavailable — it may be deleted, private, or region-locked."
+        }
+        if m.contains("http error 429") || m.contains("too many requests") {
+            return "Rate-limited by the site — wait a few minutes, or import cookies in Settings › Network."
+        }
+        return msg
     }
 
     private static func extract(regex pattern: String, from s: String) -> String? {
@@ -1179,6 +1248,7 @@ final class DownloadManager {
             DispatchQueue.global(qos: .userInitiated).async {
                 let t = Process()
                 t.executableURL = ffmpeg
+                t.environment = DependencyManager.enhancedEnvironment
                 t.arguments = [
                     "-y",
                     "-i", file.path,

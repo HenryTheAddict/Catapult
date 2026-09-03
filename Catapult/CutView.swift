@@ -394,8 +394,19 @@ struct CutWindowHost: View {
             return
         }
 
-        let args = ["--dump-single-json", "--no-warnings", "--no-playlist",
-                    "--skip-download", requestURL]
+        var args = ["--dump-single-json", "--no-warnings", "--no-playlist",
+                    "--skip-download",
+                    "--js-runtimes", "deno",
+                    "--js-runtimes", "node",
+                    "--js-runtimes", "bun",
+                    "--js-runtimes", "quickjs"]
+        if SupportedSite.match(url: requestURL) == .youtube {
+            args.append(contentsOf: [
+                "--extractor-args", "youtube:player_client=default,ios,web_safari,web_embedded,-tv"
+            ])
+        }
+        args.append(contentsOf: await CookieArgs.flags(for: requestURL))
+        args.append(requestURL)
 
         let data: Data? = await run(dep.ytDlpPath, args)
 
@@ -430,7 +441,20 @@ struct CutWindowHost: View {
         // Progressive mp4 streams play directly in AVPlayer. Ask yt-dlp for
         // the best direct preview URL it can find.
         let formatString = "b[ext=mp4][protocol^=https][vcodec!=none][acodec!=none]/22/18/best"
-        let args = ["-g", "-f", formatString, "--no-warnings", "--no-playlist", requestURL]
+        var args = [
+            "-g", "-f", formatString, "--no-warnings", "--no-playlist",
+            "--js-runtimes", "deno",
+            "--js-runtimes", "node",
+            "--js-runtimes", "bun",
+            "--js-runtimes", "quickjs"
+        ]
+        if SupportedSite.match(url: requestURL) == .youtube {
+            args.append(contentsOf: [
+                "--extractor-args", "youtube:player_client=default,ios,web_safari,web_embedded,-tv"
+            ])
+        }
+        args.append(contentsOf: await CookieArgs.flags(for: requestURL))
+        args.append(requestURL)
         guard let data = await run(dependencies.ytDlpPath, args),
               let out = String(data: data, encoding: .utf8) else {
             guard requestURL == url else { return }
@@ -455,6 +479,7 @@ struct CutWindowHost: View {
                 let t = Process()
                 t.executableURL = exe
                 t.arguments = args
+                t.environment = DependencyManager.enhancedEnvironment
                 let out = Pipe()
                 t.standardOutput = out
                 t.standardError = Pipe()

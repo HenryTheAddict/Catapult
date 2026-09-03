@@ -101,6 +101,7 @@ struct MenuBarRootView: View {
                 perform: handleDrop(providers:))
         .animation(H3.appleSnap, value: dropTargeted)
         .onAppear {
+            clipboard.checkNow()
             if let url = clipboard.detectedURL { manualURL = url }
             urlFieldFocused = true
             withAnimation(H3.appleDrift.delay(0.02)) { appeared = true }
@@ -245,6 +246,15 @@ struct MenuBarRootView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Button {
+                        downloads.enqueue(url: clipURL, mode: .video)
+                        clipboard.clearDetected()
+                    } label: {
+                        Label("Download", systemImage: "arrow.down.to.line")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
                     Button("Use") { manualURL = clipURL }
                         .buttonStyle(.borderless)
                         .font(.caption)
@@ -348,6 +358,13 @@ struct MenuBarRootView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             StatusPill(text: depStatusPillText, color: depStatusPillColor)
+            if case .error = dependencies.state {
+                Button("Retry") {
+                    Task { await dependencies.ensureInstalled() }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+            }
             Spacer()
             if !downloads.items.isEmpty {
                 Button {
@@ -841,9 +858,16 @@ struct DownloadRowView: View {
             }
         case .downloading, .postProcessing:
             VStack(alignment: .leading, spacing: 3) {
-                ProgressView(value: item.progress)
-                    .progressViewStyle(.linear)
-                    .tint(Color.accentColor)
+                HStack(spacing: 6) {
+                    ProgressView(value: item.progress)
+                        .progressViewStyle(.linear)
+                        .tint(Color.accentColor)
+                    Text("\(Int(item.progress * 100))%")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 30, alignment: .trailing)
+                }
                 HStack {
                     Text(item.statusLine)
                         .font(.caption2)

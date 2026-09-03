@@ -14,8 +14,9 @@ import CryptoKit
 final class UpdateController {
     static let shared = UpdateController()
 
-    private let manifestURL = URL(string: "https://h3nry.xyz/catapult/update.json")!
-    private let fallbackURL = URL(string: "https://h3nry.xyz/catapult/")!
+    private let manifestURL = URL(string: "https://raw.githubusercontent.com/HenryTheAddict/Catapult/master/site/catapult/update.json")!
+    private let fallbackManifestURL = URL(string: "https://github.com/HenryTheAddict/Catapult/releases/latest/download/update.json")!
+    private let fallbackURL = URL(string: "https://github.com/HenryTheAddict/Catapult/releases/latest")!
     private let automaticCheckInterval: TimeInterval = 12 * 60 * 60
     private let busyRetryInterval: TimeInterval = 30 * 60
 
@@ -176,7 +177,15 @@ final class UpdateController {
     }
 
     private func fetchManifest() async throws -> UpdateManifest {
-        var request = URLRequest(url: manifestURL)
+        do {
+            return try await fetchManifest(from: manifestURL)
+        } catch {
+            return try await fetchManifest(from: fallbackManifestURL)
+        }
+    }
+
+    private func fetchManifest(from url: URL) async throws -> UpdateManifest {
+        var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 12
         if let etag = UserDefaults.standard.string(forKey: DefaultsKey.cachedETag) {

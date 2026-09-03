@@ -6,7 +6,8 @@
         Catapult ships unsandboxed because it needs to:
         - write into a user-chosen download folder anywhere on disk
         - spawn yt-dlp and ffmpeg as child processes
-        - read the user's browser cookies (Safari/Chrome/Firefox)
+        - read the user's browser cookies (Safari/Chrome/Firefox/Helium,
+          including Helium's "Helium Safe Storage" keychain item)
         Each is incompatible with the App Sandbox without elaborate
         temporary-exception entitlements that wouldn't survive notarization.
     -->

@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /catapult/
-Sitemap: https://h3nry.xyz/sitemap.xml
-Sitemap: https://h3nry.xyz/catapult/sitemap.xml
+Sitemap: https://github.com/HenryTheAddict/Catapult/sitemap.xml
+Sitemap: https://github.com/HenryTheAddict/Catapult/releases/latest/download/sitemap.xml

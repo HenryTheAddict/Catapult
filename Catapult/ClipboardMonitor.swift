@@ -21,8 +21,8 @@ final class ClipboardMonitor {
 
     private var lastPasteboardActivityAt = Date.distantPast
 
-    private let fastPollInterval: TimeInterval = 1.25
-    private let idlePollInterval: TimeInterval = 4.0
+    private let fastPollInterval: TimeInterval = 0.6
+    private let idlePollInterval: TimeInterval = 3.0
     private let idleAfter: TimeInterval = 60
     private let maxSeenURLs = 40
 
@@ -49,8 +49,10 @@ final class ClipboardMonitor {
             self?.timer = nil
             self?.tick()
         }
-        t.tolerance = min(interval * 0.4, 1.5)
-        RunLoop.main.add(t, forMode: .default)
+        t.tolerance = min(interval * 0.3, 1.0)
+        // .common keeps detection alive while menus/the popover are tracking —
+        // with .default the timer stalls exactly when the user opens a menu.
+        RunLoop.main.add(t, forMode: .common)
         self.timer = t
     }
 
@@ -71,6 +73,13 @@ final class ClipboardMonitor {
     func clearDetected() {
         detectedURL = nil
         detectedAt = nil
+    }
+
+    /// Immediate one-shot check, called when the popover opens so a link the
+    /// user copied a split-second ago is already there — no poll-interval lag.
+    func checkNow() {
+        guard AppSettings.shared.clipboardMonitoring else { return }
+        autoreleasepool { _ = readPasteboard() }
     }
 
     private func tick() {

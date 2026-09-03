@@ -21,8 +21,57 @@ final class DependencyManager {
 
     /// URL to latest yt-dlp universal binary for macOS
     private let ytDlpURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos")!
-    /// evermeet.cx redirects to the latest ffmpeg zip for macOS
-    private let ffmpegURL = URL(string: "https://evermeet.cx/ffmpeg/getrelease/zip")!
+    /// GitHub API endpoint used to cheaply check whether yt-dlp is stale.
+    private let ytDlpLatestReleaseURL = URL(string: "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest")!
+
+    /// A downloadable ffmpeg/ffprobe zip pair. evermeet.cx is Intel-only and
+    /// semi-retired, so on Apple Silicon we prefer martin-riedl.de's native
+    /// arm64 builds; evermeet remains as the Intel fallback.
+    private struct FfmpegSource {
+        let name: String
+        let ffmpegURL: URL
+        let ffprobeURL: URL?
+    }
+
+    private var ffmpegSources: [FfmpegSource] {
+        var sources: [FfmpegSource] = []
+        #if arch(arm64)
+        if let ff = URL(string: "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip") {
+            sources.append(FfmpegSource(
+                name: "martin-riedl (arm64)",
+                ffmpegURL: ff,
+                ffprobeURL: URL(string: "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip")
+            ))
+        }
+        #else
+        if let ff = URL(string: "https://evermeet.cx/ffmpeg/getrelease/zip") {
+            sources.append(FfmpegSource(
+                name: "evermeet",
+                ffmpegURL: ff,
+                ffprobeURL: URL(string: "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip")
+            ))
+        }
+        if let ff = URL(string: "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip") {
+            sources.append(FfmpegSource(
+                name: "martin-riedl (amd64)",
+                ffmpegURL: ff,
+                ffprobeURL: URL(string: "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffprobe.zip")
+            ))
+        }
+        #endif
+        // Last-ditch cross-arch fallback: evermeet Intel builds still run
+        // under Rosetta on Apple Silicon.
+        #if arch(arm64)
+        if let ff = URL(string: "https://evermeet.cx/ffmpeg/getrelease/zip") {
+            sources.append(FfmpegSource(
+                name: "evermeet (intel via Rosetta)",
+                ffmpegURL: ff,
+                ffprobeURL: URL(string: "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip")
+            ))
+        }
+        #endif
+        return sources
+    }
 
     var supportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
@@ -40,6 +89,37 @@ final class DependencyManager {
     var ffmpegPath: URL { binDirectory.appendingPathComponent("ffmpeg") }
     var ffprobePath: URL { binDirectory.appendingPathComponent("ffprobe") }
 
+    /// Augmented environment with search paths for Homebrew, Node/Deno/Bun runtimes,
+    /// and Catapult's bundled tools so child processes can resolve JS engines and binaries.
+    static var enhancedEnvironment: [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let home = NSHomeDirectory()
+        let binDir = DependencyManager.shared.binDirectory.path
+        let searchPaths = [
+            binDir,
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "\(home)/.deno/bin",
+            "\(home)/.bun/bin",
+            "\(home)/.cargo/bin",
+            "\(home)/.nvm/current/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+        let current = env["PATH"] ?? ""
+        let parts = current.split(separator: ":").map(String.init)
+        var result = searchPaths
+        for p in parts where !result.contains(p) {
+            result.append(p)
+        }
+        env["PATH"] = result.joined(separator: ":")
+        return env
+    }
+
     private init() {}
 
     @MainActor
@@ -52,6 +132,15 @@ final class DependencyManager {
             if !FileManager.default.fileExists(atPath: ffmpegPath.path) {
                 try await downloadFfmpeg()
             }
+            // A present-but-broken ffmpeg (truncated download, wrong arch,
+            // missing encoders) is what surfaces to users as
+            // "Postprocessing: Encoder not found". Catch it here.
+            if await !ffmpegIsUsable() {
+                state = .installing("ffmpeg")
+                try? FileManager.default.removeItem(at: ffmpegPath)
+                try? FileManager.default.removeItem(at: ffprobePath)
+                try await downloadFfmpeg()
+            }
             ytDlpVersion  = try? await runForOutput(ytDlpPath, ["--version"]).trimmingCharacters(in: .whitespacesAndNewlines)
             if let full = try? await runForOutput(ffmpegPath, ["-version"]) {
                 ffmpegVersion = full.split(separator: "\n").first.map(String.init) ?? full
@@ -60,6 +149,54 @@ final class DependencyManager {
         } catch {
             state = .error(error.localizedDescription)
         }
+    }
+
+    /// Checks GitHub for a newer yt-dlp and downloads it only when the local
+    /// build is actually stale. Throttled to one check per 12h unless forced,
+    /// so launch-time checks stay cheap. YouTube breaks old yt-dlp builds
+    /// every few weeks, which is the #1 cause of "downloads stopped working".
+    @MainActor
+    func updateYtDlpIfNeeded(force: Bool = false) async {
+        let lastCheck = UserDefaults.standard.double(forKey: "ytDlpLastUpdateCheckAt")
+        if !force, Date().timeIntervalSince1970 - lastCheck < 12 * 3600 { return }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "ytDlpLastUpdateCheckAt")
+
+        guard let latest = await latestYtDlpTag() else { return }
+        var current = ytDlpVersion
+        if current == nil || current!.isEmpty {
+            current = try? await runForOutput(ytDlpPath, ["--version"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let current, !current.isEmpty else {
+            await updateYtDlp()
+            return
+        }
+        if current != latest {
+            await updateYtDlp()
+        }
+    }
+
+    private func latestYtDlpTag() async -> String? {
+        var request = URLRequest(url: ytDlpLatestReleaseURL)
+        request.timeoutInterval = 10
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tag = obj["tag_name"] as? String, !tag.isEmpty else {
+            return nil
+        }
+        return tag
+    }
+
+    /// True when the installed ffmpeg both launches on this machine and was
+    /// built with the encoders Catapult's pipelines depend on. This doubles
+    /// as a Rosetta/arch check: a binary that can't exec here fails the run.
+    private func ffmpegIsUsable() async -> Bool {
+        guard FileManager.default.fileExists(atPath: ffmpegPath.path) else { return false }
+        guard let listing = try? await runForOutput(ffmpegPath, ["-hide_banner", "-encoders"]),
+              !listing.isEmpty else { return false }
+        let required = ["libmp3lame", "libopus", "libx264", "mjpeg", "png", " aac "]
+        return required.allSatisfy { listing.contains($0) }
     }
 
     @MainActor
@@ -100,6 +237,10 @@ final class DependencyManager {
             lower.contains("merger") ||
             lower.contains("convert") ||
             lower.contains("thumbnail") ||
+            lower.contains("encoder") ||
+            lower.contains("error opening output") ||
+            lower.contains("bad cpu type") ||
+            lower.contains("exec format error") ||
             lower.contains("audio") ||
             lower.contains("clip")
 
@@ -143,8 +284,29 @@ final class DependencyManager {
 
     @MainActor
     private func downloadFfmpeg() async throws {
+        var lastError: Error = NSError(domain: "Catapult", code: 3,
+                                       userInfo: [NSLocalizedDescriptionKey: "No ffmpeg download sources configured"])
+        for source in ffmpegSources {
+            do {
+                try await installFfmpeg(from: source)
+                if await ffmpegIsUsable() { return }
+                lastError = NSError(domain: "Catapult", code: 4,
+                                    userInfo: [NSLocalizedDescriptionKey: "ffmpeg from \(source.name) failed verification (missing encoders or wrong architecture)"])
+            } catch {
+                lastError = error
+            }
+            // This source didn't work out — clear partial installs before
+            // trying the next one.
+            try? FileManager.default.removeItem(at: ffmpegPath)
+            try? FileManager.default.removeItem(at: ffprobePath)
+        }
+        throw lastError
+    }
+
+    @MainActor
+    private func installFfmpeg(from source: FfmpegSource) async throws {
         state = .downloading("ffmpeg", 0)
-        let zip = try await download(from: ffmpegURL) { [weak self] p in
+        let zip = try await download(from: source.ffmpegURL) { [weak self] p in
             self?.state = .downloading("ffmpeg", p)
         }
         state = .installing("ffmpeg")
@@ -161,14 +323,14 @@ final class DependencyManager {
         task.waitUntilExit()
         guard task.terminationStatus == 0 else {
             throw NSError(domain: "Catapult", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Failed to unzip ffmpeg"])
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to unzip ffmpeg (\(source.name))"])
         }
         try? FileManager.default.removeItem(at: zip)
 
         // Find the ffmpeg binary inside the unzipped tree
         guard let found = findBinary(named: "ffmpeg", in: unzipDir) else {
             throw NSError(domain: "Catapult", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "ffmpeg binary not found in archive"])
+                          userInfo: [NSLocalizedDescriptionKey: "ffmpeg binary not found in archive (\(source.name))"])
         }
         try? FileManager.default.removeItem(at: ffmpegPath)
         try FileManager.default.moveItem(at: found, to: ffmpegPath)
@@ -176,8 +338,8 @@ final class DependencyManager {
         try clearQuarantine(ffmpegPath)
         try adhocSign(ffmpegPath)
 
-        // Try to also fetch ffprobe separately (evermeet provides its own zip)
-        if let probeURL = URL(string: "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip") {
+        // Best-effort ffprobe from the same source.
+        if let probeURL = source.ffprobeURL {
             if let probeZip = try? await download(from: probeURL, progress: { _ in }) {
                 let probeDir = supportDirectory.appendingPathComponent("unzip-probe", isDirectory: true)
                 try? FileManager.default.removeItem(at: probeDir)
@@ -252,6 +414,7 @@ final class DependencyManager {
             let t = Process()
             t.executableURL = exe
             t.arguments = args
+            t.environment = DependencyManager.enhancedEnvironment
             let out = Pipe()
             t.standardOutput = out
             t.standardError = Pipe()
