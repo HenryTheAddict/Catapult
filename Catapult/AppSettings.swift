@@ -62,7 +62,7 @@ enum FilenamePreset: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .simple: return "Simple"
         case .normal: return "Normal"
-        case .nerd:   return "Nerd slop"
+        case .nerd:   return "Nerd Slop"
         case .custom: return "Custom"
         }
     }
@@ -186,11 +186,11 @@ enum DevicePreset: String, CaseIterable, Identifiable, Codable {
 
     var blurb: String {
         switch self {
-        case .none:         return "use your regular quality settings."
-        case .iphone:       return "h.264 high 1080p, aac 192k, mp4 — plays on any iphone from the 6s up."
+        case .none:         return "just uses your regular quality settings."
+        case .iphone:       return "h.264 high 1080p, aac 192k, mp4 probably... plays on any iphone from the 5 up."
         case .ipadPro:      return "hevc 2160p, aac 256k, mp4 — for the big-screen ones."
-        case .plex:         return "just remux — keep original codecs, embed subs/metadata."
-        case .discord10mb:  return "scales bitrate to fit under 10 mb. nitro-free memes."
+        case .plex:         return "just remux, keep original codecs, embed subs/metadata."
+        case .discord10mb:  return "adaptively magically scales bitrate to fit under 10 mb. AI enhanced (Im lying about that lmao)"
         case .psp:          return "480×272 h.264 baseline, aac 128k @ 48k, mp4. plays on stock firmware."
         case .ps3:          return "1080p h.264 high 4.1, aac 320k, mp4. drag into the PS3's video folder."
         case .psvita:       return "960×544 h.264 baseline 3.1, aac 192k, mp4. the vita's native res."
