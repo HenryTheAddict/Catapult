@@ -5,6 +5,8 @@ import AVFoundation
 import Observation
 
 /// Pass a URL through the global-window mechanism (MenuBarExtra can't hand it directly).
+/// THIS IS INCREDIBLY BOTCHED, REWRITING THIS IS NESSICARY!
+
 @Observable
 final class CutCoordinator {
     static let shared = CutCoordinator()
@@ -49,7 +51,7 @@ struct CutWindowHost: View {
 
     var body: some View {
         ZStack {
-            // h3 sky background — adapts to dark mode automatically.
+            // h3 sky background adapts to dark mode automatically.
             H3SkyBackground()
 
             VStack(spacing: 0) {
