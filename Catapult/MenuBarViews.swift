@@ -330,16 +330,21 @@ struct MenuBarRootView: View {
             emptyState
         } else {
             ScrollView {
-                VStack(spacing: 6) {
-                    ForEach(downloads.items) { item in
+                VStack(spacing: 10) {
+                    ForEach(downloads.items.filter { if case .finished = $0.status { return false }; return true }) { item in
                         DownloadRowView(item: item)
                             .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: -10)).combined(with: .scale(scale: 0.97, anchor: .top)), removal: .opacity))
+                    }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 10, alignment: .top)], spacing: 10) {
+                        ForEach(downloads.items.filter { if case .finished = $0.status { return true }; return false }) { item in
+                            DownloadBentoCard(item: item)
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
             }
-            .frame(maxHeight: 340)
+            .frame(maxHeight: 440)
             .animation(H3.appleSnap, value: downloads.items.map(\.id))
         }
     }
@@ -406,7 +411,7 @@ struct MenuBarRootView: View {
     // MARK: Background
 
     private var backgroundLayer: some View {
-        H3.ink50
+        Rectangle().fill(.ultraThinMaterial)
     }
 
     // MARK: Actions
@@ -741,6 +746,73 @@ struct StatusPill: View {
 }
 
 // MARK: - Download row
+
+struct DownloadBentoCard: View {
+    @Bindable var item: DownloadItem
+    @Environment(DownloadManager.self) private var downloads
+    @State private var hover = false
+    @State private var actionFocused = false
+    @State private var fileSize: Int64?
+    @FocusState private var copyFocused: Bool
+    private var file: URL? {
+        if case .finished(let file) = item.status { return file }
+        return nil
+    }
+    private var available: Bool { file.map { FileManager.default.fileExists(atPath: $0.path) } ?? false }
+    private var revealActions: Bool { hover || actionFocused || copyFocused }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MediaPreview(id: item.id, file: available ? file : nil, thumbnail: item.thumbnailURL, mode: item.mode)
+                .frame(height: 112)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(alignment: .bottomTrailing) {
+                    if let duration = item.durationSeconds {
+                        Text(MediaTime.format(duration).dropLast(4)).font(.system(size: 10, design: .monospaced))
+                            .padding(4).foregroundStyle(.white).background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 4)).padding(6)
+                    }
+                }
+            Text(item.title).font(.system(size: 12, weight: .medium)).lineLimit(2)
+                .frame(height: 30, alignment: .topLeading)
+            HStack(spacing: 4) {
+                Image(systemName: available ? "checkmark.circle" : "exclamationmark.circle")
+                Text(available ? "Saved" : "File unavailable")
+                Spacer(minLength: 0)
+                if let bytes = fileSize { Text(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) }
+            }.font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                if let file { MediaFileActions(file: file, mode: item.mode, onFocusChange: { actionFocused = $0 }) }
+                Spacer(minLength: 0)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.url, forType: .string)
+                } label: { Image(systemName: "link") }
+                    .buttonStyle(MediaActionStyle()).help("Copy source link").focused($copyFocused)
+            }
+            .opacity(revealActions ? 1 : 0)
+            .animation(H3.easeOut, value: revealActions)
+        }
+        .padding(9)
+        .background(.quaternary.opacity(hover ? 0.7 : 0.35), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.primary.opacity(hover ? 0.14 : 0.05), lineWidth: 0.5))
+        .onHover { hover = $0 }
+        .animation(H3.easeOut, value: hover)
+        .task(id: file) {
+            if let file {
+                fileSize = await Task.detached { (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) }.value
+            }
+        }
+        .contextMenu {
+            if let file, available {
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+                Button(item.mode == .thumbnailOnly ? "Open image" : "Open in QuickTime") {
+                    if item.mode == .thumbnailOnly { NSWorkspace.shared.open(file) }
+                    else { NSWorkspace.openInQuickTime(url: file) }
+                }
+            }
+            Button("Remove from queue") { downloads.remove(item) }
+        }
+    }
+}
 
 struct DownloadRowView: View {
     @Bindable var item: DownloadItem

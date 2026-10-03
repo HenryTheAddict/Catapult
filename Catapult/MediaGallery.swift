@@ -19,6 +19,7 @@ final class HoverPreview {
             guard !Task.isCancelled, activeID == id else { return }
             let asset = AVURLAsset(url: file)
             guard let duration = try? await asset.load(.duration), duration.seconds > 0,
+                  (try? await asset.load(.isPlayable)) == true,
                   !Task.isCancelled, activeID == id else { return }
             let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             player.isMuted = true
@@ -172,6 +173,9 @@ struct MediaActionStyle: ButtonStyle {
 struct MediaFileActions: View {
     let file: URL
     let mode: DownloadMode
+    var onFocusChange: ((Bool) -> Void)? = nil
+    private enum Action: Hashable { case open, finder, trim }
+    @FocusState private var focusedAction: Action?
     @Environment(\.openWindow) private var openWindow
     private var available: Bool { FileManager.default.fileExists(atPath: file.path) }
     var body: some View {
@@ -181,7 +185,9 @@ struct MediaFileActions: View {
                 else { NSWorkspace.openInQuickTime(url: file) }
             } label: { Image(systemName: mode == .thumbnailOnly ? "arrow.up.forward.app" : "play.rectangle") }
             .help(mode == .thumbnailOnly ? "Open image" : "Open in QuickTime")
+            .focused($focusedAction, equals: .open)
             Button { NSWorkspace.shared.activateFileViewerSelecting([file]) } label: { Image(systemName: "folder") }.help("Show in Finder")
+                .focused($focusedAction, equals: .finder)
             if mode != .thumbnailOnly {
                 Button {
                     HoverPreview.shared.stop()
@@ -189,10 +195,12 @@ struct MediaFileActions: View {
                     openWindow(id: "cut")
                     NSApp.activate(ignoringOtherApps: true)
                 } label: { Image(systemName: "scissors") }.help("Trim this file")
+                    .focused($focusedAction, equals: .trim)
             }
         }
         .buttonStyle(MediaActionStyle())
         .disabled(!available)
+        .onChange(of: focusedAction) { _, value in onFocusChange?(value != nil) }
     }
 }
 
