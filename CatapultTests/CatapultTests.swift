@@ -287,3 +287,56 @@ struct CookieCryptoTests {
         #expect(HeliumCookieBridge.decryptValue(Data("plaintext".utf8), key: key, hashPrefixFirst: false, domain: ".example.org") == Data("plaintext".utf8))
     }
 }
+
+struct TrimTimelineTests {
+    @Test func coordinatesStayConsistentAtDifferentWidthsAndZooms() {
+        for width in [320.0, 760, 1100] {
+            for zoom in [1.0, 2, 10, 50] {
+                let view = TrimTimelineGeometry(duration: 120, zoom: zoom, center: 60, width: width)
+                for fraction in [0.0, 0.25, 0.5, 0.75, 1] {
+                    let time = view.lower + view.span * fraction
+                    #expect(abs(view.time(at: view.x(at: time)) - time) < 0.000001)
+                }
+                #expect(abs(view.x(at: view.lower) - 16) < 0.000001)
+                #expect(abs(view.x(at: view.upper) - (width - 16)) < 0.000001)
+            }
+        }
+    }
+    @Test func draggingUsesAnAnchorInsteadOfJumpingToThePointer() {
+        let view = TrimTimelineGeometry(duration: 100, zoom: 5, center: 50, width: 832)
+        #expect(view.draggedTime(initial: 47, translation: 0) == 47)
+        #expect(view.draggedTime(initial: 47, translation: 80) == 49)
+        #expect(view.draggedTime(initial: 47, translation: -80) == 45)
+        #expect(view.draggedTime(initial: 99, translation: 800) == 100)
+        #expect(view.draggedTime(initial: 1, translation: -800) == 0)
+    }
+    @Test func zoomKeepsThePlayheadPositionAndPanningReachesSourceEdges() {
+        let view = TrimTimelineGeometry(duration: 120, zoom: 2, center: 60, width: 800)
+        let anchor = 50.0
+        let next = TrimTimelineGeometry(duration: 120, zoom: 4, center: view.zoomedCenter(to: 4, anchor: anchor), width: 800)
+        #expect(abs(view.x(at: anchor) - next.x(at: anchor)) < 0.000001)
+        let panned = TrimTimelineGeometry(duration: 120, zoom: 4, center: 100, width: 800)
+        #expect(panned.lower == 85 && panned.upper == 115)
+        #expect(TrimTimelineGeometry(duration: 120, zoom: 4, center: 5000, width: 800).upper == 120)
+        #expect(TrimTimelineGeometry(duration: 120, zoom: 4, center: -5000, width: 800).lower == 0)
+        let full = TrimTimelineGeometry(duration: 120, zoom: 1, center: 100, width: 800)
+        #expect(full.lower == 0 && full.upper == 120 && full.panLimit == 0)
+    }
+    @Test func movingARangePreservesLengthAtBothSourceEdges() {
+        let selection = TrimSelection(start: 30, end: 70)
+        #expect(TrimTimelineGeometry.move(selection, by: 10, duration: 120) == TrimSelection(start: 40, end: 80))
+        #expect(TrimTimelineGeometry.move(selection, by: -100, duration: 120) == TrimSelection(start: 0, end: 40))
+        #expect(TrimTimelineGeometry.move(selection, by: 100, duration: 120) == TrimSelection(start: 80, end: 120))
+    }
+    @Test func viewportKeepsAdjustedBoundariesVisibleAndHandlesShortSources() {
+        let view = TrimTimelineGeometry(duration: 100, zoom: 10, center: 50, width: 800)
+        for boundary in [0.0, 40, 60, 100] {
+            let next = TrimTimelineGeometry(duration: 100, zoom: 10, center: view.centerKeepingVisible(boundary), width: 800)
+            #expect(next.contains(boundary))
+        }
+        let short = TrimTimelineGeometry(duration: 0.1, zoom: 50, center: 0, width: 800)
+        #expect(short.lower == 0 && short.upper == 0.1)
+        let invalid = TrimTimelineGeometry(duration: .nan, zoom: .infinity, center: .nan, width: 0)
+        #expect(invalid.time(at: 0).isFinite && invalid.span > 0 && invalid.trackWidth > 0)
+    }
+}

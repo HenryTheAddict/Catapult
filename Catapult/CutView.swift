@@ -25,6 +25,7 @@ struct CutWindowHost: View {
     @State private var coordinator = CutCoordinator.shared
     @State private var source: MediaSource = .online("")
     @State private var link = ""
+    @State private var showLinkEntry = false
     @State private var title = "Choose a link or media file"
     @State private var uploader = ""
     @State private var duration = 0.0
@@ -38,6 +39,9 @@ struct CutWindowHost: View {
     @State private var currentTime = 0.0
     @State private var frameStep = 0.1
     @State private var isPlaying = false
+    @State private var playbackRequested = false
+    @State private var timelineEditing = false
+    @State private var timelineControlFocused = false
     @State private var muted = false
     @State private var loopSelection = true
     @State private var timeObserver: Any?
@@ -81,16 +85,21 @@ struct CutWindowHost: View {
                     Text(title).font(H3.body(size: 12)).foregroundStyle(H3.ink500).lineLimit(1)
                 }
                 Spacer()
+                if case .local = source {
+                    Button(showLinkEntry ? "Hide link" : "Use link", systemImage: "link") { showLinkEntry.toggle() }.disabled(busy)
+                }
                 Button("Open file", systemImage: "folder.badge.plus", action: openFile).disabled(busy)
             }.padding(.horizontal, 24).padding(.vertical, 16)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
+                    if showLinkEntry || source.isOnline {
                     HStack {
                         Image(systemName: "link").foregroundStyle(H3.ink500)
                         TextField("Paste a video link", text: $link).textFieldStyle(.roundedBorder).onSubmit(loadLink)
                         Button("Load", action: loadLink).disabled(busy || link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         if loading { ProgressView().controlSize(.small) }
+                    }
                     }
                     if let loadError { Label(loadError, systemImage: "exclamationmark.triangle").foregroundStyle(H3.orange).font(H3.body(size: 12)) }
                     preview
@@ -100,16 +109,18 @@ struct CutWindowHost: View {
                         Label("Selection", systemImage: "timeline.selection").font(H3.body(size: 13, weight: .semibold))
                         Text(MediaTime.format(max(0, endSeconds - startSeconds))).font(H3.mono(size: 12)).foregroundStyle(H3.blue400)
                         Spacer()
-                        Button { zoom = max(1, zoom / 1.5) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out")
-                        Button { zoom = min(50, zoom * 1.5) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in")
-                        Button("Fit selection") { timelineCenter = (startSeconds + endSeconds) / 2; zoom = min(50, max(1, duration / max(0.25, (endSeconds - startSeconds) * 1.3))) }
-                        Button("Reset") { setRange(start: 0, end: duration); zoom = 1; timelineCenter = duration / 2 }
+                        Button("Reset range") { setRange(start: 0, end: duration); zoom = 1; timelineCenter = duration / 2 }
                     }.buttonStyle(.borderless).disabled(duration <= 0 || busy)
-                    FilmstripTrimView(start: startBinding, end: endBinding, zoom: $zoom,
-                                      center: $timelineCenter, duration: duration, currentTime: currentTime,
-                                      previewURL: previewURL, onScrub: { seek($0, precise: false) },
-                                      onScrubEnd: { seek($0, precise: true) })
-                        .frame(height: 74).padding(.top, 14).padding(.bottom, 12).disabled(busy || duration <= 0)
+                    TrimTimelineView(start: startBinding, end: endBinding, zoom: $zoom,
+                                     center: $timelineCenter, duration: duration, currentTime: currentTime,
+                                     frameStep: frameStep, previewURL: previewURL,
+                                     onScrub: { seek($0, precise: false) },
+                                     onScrubEnd: { seek($0, precise: true) },
+                                     onMoveSelection: { setRange(start: $0.start, end: $0.end) },
+                                     onInteractionBegin: beginTimelineEdit, onInteractionEnd: endTimelineEdit,
+                                     onControlFocus: { timelineControlFocused = $0 })
+                        .id(source)
+                        .disabled(busy || duration <= 0)
                     HStack(spacing: 12) {
                         TimeField(label: "Start", seconds: Binding(get: { startSeconds }, set: { setRange(start: $0, end: endSeconds) }), min: 0, max: max(0, endSeconds - min(0.25, duration)), invalid: $startInputInvalid)
                         TimeField(label: "End", seconds: Binding(get: { endSeconds }, set: { setRange(start: startSeconds, end: $0) }), min: startSeconds + min(0.25, duration), max: duration, invalid: $endInputInvalid)
@@ -232,11 +243,19 @@ struct CutWindowHost: View {
         startSeconds = min(max(0, start), duration)
         endSeconds = min(max(0, end), duration)
         historyTask?.cancel()
+        guard !timelineEditing else { return }
         historyTask = Task {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
             rememberRange()
         }
+    }
+    private func beginTimelineEdit() {
+        historyTask?.cancel(); rememberRange(); timelineEditing = true
+        playbackRequested = false; player?.pause(); isPlaying = false
+    }
+    private func endTimelineEdit() {
+        timelineEditing = false; rememberRange()
     }
     private func rememberRange() {
         if rangeHistory.last != selection { rangeHistory.append(selection); redoHistory.removeAll() }
@@ -257,6 +276,7 @@ struct CutWindowHost: View {
     private func handleKey(_ key: String, modifiers: NSEvent.ModifierFlags) -> Bool {
         if modifiers.contains(.command), key.lowercased() == "z" { undoRange(redo: modifiers.contains(.shift)); return true }
         guard !modifiers.contains(.command), !busy, duration > 0 else { return false }
+        if timelineControlFocused && (key == "left" || key == "right") { return false }
         switch key.lowercased() {
         case " ": togglePlayback()
         case "i": startBinding.wrappedValue = currentTime
@@ -269,8 +289,9 @@ struct CutWindowHost: View {
     }
     private func togglePlayback() {
         guard let player else { return }
-        if player.rate != 0 { player.pause(); isPlaying = false }
+        if playbackRequested { playbackRequested = false; player.pause(); isPlaying = false }
         else {
+            playbackRequested = true
             if currentTime >= duration || (loopSelection && (currentTime < startSeconds || currentTime >= endSeconds)) { seek(loopSelection ? startSeconds : 0, precise: true) }
             player.play(); isPlaying = true
         }
@@ -292,6 +313,7 @@ struct CutWindowHost: View {
         if let observer = timeObserver, let player { player.removeTimeObserver(observer) }
         if let playbackEndObserver { NotificationCenter.default.removeObserver(playbackEndObserver) }
         playbackEndObserver = nil; playbackObservation = nil; restartingLoop = false
+        playbackRequested = false; timelineEditing = false; timelineControlFocused = false
         timeObserver = nil; playerStatusObservation = nil; player?.pause(); player = nil; isPlaying = false
     }
     private func configurePlayer(_ file: URL) async {
@@ -318,24 +340,24 @@ struct CutWindowHost: View {
         playbackEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: player.currentItem, queue: .main) { _ in
             Task { @MainActor in
                 guard loadID == generation, self.player === player else { return }
-                if loopSelection { restartSelection(player, generation: generation) }
-                else { isPlaying = false }
+                if loopSelection && playbackRequested { restartSelection(player, generation: generation) }
+                else { isPlaying = false; playbackRequested = false }
             }
         }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.05, preferredTimescale: 600), queue: .main) { time in
-            currentTime = max(0, time.seconds.isFinite ? time.seconds : 0)
+            if seekTask == nil { currentTime = max(0, time.seconds.isFinite ? time.seconds : 0) }
             isPlaying = player.rate > 0
             if loopSelection && player.rate > 0 && currentTime >= endSeconds { restartSelection(player, generation: generation) }
         }
     }
     private func restartSelection(_ playback: AVPlayer, generation: UUID) {
-        guard !restartingLoop else { return }
+        guard !restartingLoop, playbackRequested else { return }
         restartingLoop = true
         Task { @MainActor in
             await playback.seek(to: CMTime(seconds: startSeconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
             guard loadID == generation, player === playback else { return }
             restartingLoop = false
-            playback.play()
+            if playbackRequested { playback.play() }
         }
     }
     private func loadSource() async {
@@ -395,7 +417,7 @@ struct CutWindowHost: View {
     }
     private func export() {
         guard selectionIsValid, !busy else { return }
-        player?.pause(); isPlaying = false
+        playbackRequested = false; player?.pause(); isPlaying = false
         job = downloads.enqueue(url: source.value, mode: asAudio ? .audio : .cut,
                                 cutStart: startSeconds, cutEnd: endSeconds,
                                 overrides: DownloadOverrides(videoQuality: videoQuality, videoContainer: videoContainer, audioFormat: audioFormat),
@@ -441,459 +463,6 @@ private struct TrimKeyboardMonitor: NSViewRepresentable {
     final class Coordinator { var monitor: Any? }
 }
 
-// MARK: - iOS Photos-style filmstrip trim
-
-struct TimedThumbnail {
-    let time: Double
-    let image: NSImage?
-}
-@MainActor final class FilmstripCache {
-    static let shared = FilmstripCache()
-    private var cache: [String: [TimedThumbnail]] = [:]
-    private var order: [String] = []
-    func get(_ key: String) -> [TimedThumbnail]? { cache[key] }
-    func set(_ key: String, _ images: [TimedThumbnail]) {
-        cache[key] = images
-        order.removeAll { $0 == key }; order.append(key)
-        while order.count > 8 { cache.removeValue(forKey: order.removeFirst()) }
-    }
-}
-
-struct FilmstripTrimView: View {
-    @Binding var start: Double
-    @Binding var end: Double
-    @Binding var zoom: Double
-    @Binding var center: Double?
-    let duration: Double
-    let currentTime: Double
-    let previewURL: URL?
-    let onScrub: (Double) -> Void
-    let onScrubEnd: (Double) -> Void
-
-    @State private var thumbnails: [TimedThumbnail] = []
-    @State private var timelineSpace = UUID()
-    @State private var loadingThumbs = false
-    @State private var dragAnchor: (startS: Double, endS: Double, startX: CGFloat)?
-    @State private var pinchBase: Double?
-
-    private let handleW: CGFloat = 18
-    private let handleOverhang: CGFloat = 8   // how far handles extend above/below the strip
-    private var minSelection: Double { min(0.25, safeDuration) }
-
-    private var safeDuration: Double {
-        duration.isFinite && duration > 0 ? duration : 0.25
-    }
-
-    private var safeZoom: Double {
-        zoom.isFinite && zoom >= 1 ? zoom : 1
-    }
-
-    // Windowed view around selection midpoint when zoomed.
-    private var windowDuration: Double { max(safeDuration / safeZoom, minSelection) }
-    private var windowStart: Double {
-        let mid = center ?? (start + end) / 2
-        let half = windowDuration / 2
-        let clampedMid = min(max(mid.isFinite ? mid : half, half), max(safeDuration - half, half))
-        return max(0, clampedMid - half)
-    }
-    private var windowEnd: Double { min(safeDuration, windowStart + windowDuration) }
-
-    var body: some View {
-        GeometryReader { geo in
-            let w = max(geo.size.width.isFinite ? geo.size.width : 1, 1)
-            let h = max(geo.size.height.isFinite ? geo.size.height : 1, 1)
-            ZStack(alignment: .topLeading) {
-                FilmstripScrollCatcher(
-                    onScroll: { dx, dy, modifiers in
-                        // Horizontal trackpad scroll → scrub the playhead
-                        // (shift-scroll pans the selection). Vertical → zoom.
-                        let horizontal = abs(dx) > abs(dy)
-                        if horizontal && modifiers.contains(.shift) {
-                            let delta = Double(dx) / Double(max(w, 1)) * windowDuration
-                            center = min(max((center ?? (start + end) / 2) + delta, windowDuration / 2), safeDuration - windowDuration / 2)
-                        } else if horizontal {
-                            let frac = Double(dx) / Double(max(w, 1))
-                            let delta = frac * windowDuration
-                            let t = min(max(currentTime + delta, 0), safeDuration)
-                            onScrubEnd(t)
-                        } else {
-                            let factor = pow(1.10, Double(dy) / 6.0)
-                            zoom = min(max(zoom * factor, 1), 50)
-                        }
-                    },
-                    onMiddleClick: { x in
-                        let sec = windowStart + Double(x / max(w, 1)) * windowDuration
-                        onScrubEnd(sec)
-                    }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                filmstrip(width: w, height: h)
-                    .clipShape(RoundedRectangle(cornerRadius: H3.radius2, style: .continuous))
-                    .allowsHitTesting(false)
-
-                // Tick marks at sensible intervals so the user always has a
-                // sense of where they are even without thumbnails loaded.
-                tickOverlay(width: w, height: h)
-                    .allowsHitTesting(false)
-
-                // Adaptive dim outside the selection — uses ink900 so it
-                // works in both light and dark mode.
-                if let sx = xPos(max(start, windowStart), w) {
-                    H3.ink900.opacity(0.45)
-                        .frame(width: sx, height: h)
-                        .allowsHitTesting(false)
-                }
-                if let ex = xPos(min(end, windowEnd), w) {
-                    H3.ink900.opacity(0.45)
-                        .frame(width: max(0, w - ex), height: h)
-                        .offset(x: ex)
-                        .allowsHitTesting(false)
-                }
-
-                // h3 brand-blue gradient frame around selection.
-                if start <= windowEnd && end >= windowStart {
-                    let sx = xPos(max(start, windowStart), w) ?? 0
-                    let ex = xPos(min(end, windowEnd), w) ?? w
-                    RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                        .strokeBorder(H3.gradDeep, lineWidth: 3)
-                        .frame(width: max(ex - sx, 0), height: h)
-                        .offset(x: sx)
-                        .shadow(color: H3.blue500.opacity(0.35), radius: 4)
-                        .allowsHitTesting(false)
-                }
-
-                // Selection-duration badge in the middle of the selection.
-                if start >= windowStart, end <= windowEnd, end - start > 0 {
-                    let sx = xPos(start, w) ?? 0
-                    let ex = xPos(end, w) ?? 0
-                    let mid = (sx + ex) / 2
-                    selectionBadge(seconds: end - start)
-                        .offset(x: mid - 36, y: h + 4)
-                        .allowsHitTesting(false)
-                }
-
-                // Playhead — bright blue line with a glossy diamond head and
-                // a floating time pill above so the user can read the exact
-                // current frame without looking elsewhere.
-                if currentTime >= windowStart, currentTime <= windowEnd,
-                   let px = xPos(currentTime, w) {
-                    playhead(at: px, height: h,
-                             time: currentTime)
-                        .allowsHitTesting(false)
-                }
-
-                // Middle drag area — drags entire selection.
-                if start >= windowStart && end <= windowEnd {
-                    let sx = xPos(start, w) ?? 0
-                    let ex = xPos(end, w) ?? 0
-                    Rectangle()
-                        .fill(Color.clear)
-                        .contentShape(Rectangle())
-                        .frame(width: max(ex - sx - handleW * 2, 0), height: h)
-                        .offset(x: sx + handleW)
-                        .gesture(selectionDrag(width: w))
-                }
-
-                // Left + right glossy h3 handles.
-                if start >= windowStart - 0.01 && start <= windowEnd + 0.01,
-                   let sx = xPos(start, w) {
-                    handle(isStart: true, height: h)
-                        .offset(x: sx - handleW / 2, y: -handleOverhang)
-                        .gesture(handleDrag(isStart: true, width: w))
-                }
-                if end >= windowStart - 0.01 && end <= windowEnd + 0.01,
-                   let ex = xPos(end, w) {
-                    handle(isStart: false, height: h)
-                        .offset(x: ex - handleW / 2, y: -handleOverhang)
-                        .gesture(handleDrag(isStart: false, width: w))
-                }
-            }
-            .background(
-                // Subtle h3 surface beneath the strip so empty thumbnails
-                // don't read as a void in dark mode.
-                RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                    .fill(H3.cardFill)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                    .stroke(H3.cardStroke, lineWidth: 1)
-            )
-            .contentShape(Rectangle())
-            .onTapGesture { loc in
-                let pct = Double(loc.x / max(w, 1))
-                onScrubEnd(windowStart + pct * windowDuration)
-            }
-            .gesture(
-                MagnificationGesture()
-                    .onChanged { scale in
-                        let base = pinchBase ?? zoom
-                        if pinchBase == nil { pinchBase = zoom }
-                        zoom = min(max(base * Double(scale), 1), 50)
-                    }
-                    .onEnded { _ in pinchBase = nil }
-            )
-        }
-        .coordinateSpace(name: timelineSpace)
-        .task(id: "\(previewURL?.absoluteString ?? "")|\(windowStart)|\(windowDuration)") { await loadThumbnails() }
-    }
-
-    // MARK: - h3 timeline overlays
-
-    /// Pick a tick interval that yields ~6-10 ticks across the visible window.
-    private var tickInterval: Double {
-        let candidates: [Double] = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
-        let target = windowDuration / 8
-        return candidates.first { $0 >= target } ?? 3600
-    }
-
-    private func tickOverlay(width w: CGFloat, height h: CGFloat) -> some View {
-        let interval = tickInterval
-        let firstTick = (windowStart / interval).rounded(.up) * interval
-        return ZStack(alignment: .topLeading) {
-            ForEach(Array(stride(from: firstTick, through: windowEnd, by: interval)), id: \.self) { t in
-                if let x = xPos(t, w) {
-                    VStack(spacing: 0) {
-                        Rectangle()
-                            .fill(H3.ink900.opacity(0.25))
-                            .frame(width: 1, height: 6)
-                        Spacer(minLength: 0)
-                        Rectangle()
-                            .fill(H3.ink900.opacity(0.25))
-                            .frame(width: 1, height: 6)
-                    }
-                    .frame(height: h)
-                    .offset(x: x)
-                }
-            }
-        }
-    }
-
-    private func selectionBadge(seconds: Double) -> some View {
-        Text(formatSeconds(seconds))
-            .font(H3.mono(size: 10, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(
-                Capsule().fill(H3.gradDeep)
-            )
-            .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
-            .shadow(color: H3.shadowDrop, radius: 3, y: 2)
-            .frame(width: 72)
-    }
-
-    private func playhead(at x: CGFloat, height h: CGFloat, time: Double) -> some View {
-        ZStack(alignment: .top) {
-            // Vertical line.
-            Rectangle()
-                .fill(Color.white)
-                .frame(width: 2, height: h + 6)
-                .shadow(color: .black.opacity(0.6), radius: 2)
-                .offset(x: x - 1, y: -3)
-            // Floating time pill above the strip.
-            Text(formatSeconds(time))
-                .font(H3.mono(size: 10, weight: .semibold))
-                .foregroundStyle(H3.ink900)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(
-                    Capsule().fill(H3.cardFill)
-                )
-                .overlay(Capsule().stroke(H3.cardStroke, lineWidth: 1))
-                .shadow(color: H3.shadowDrop.opacity(0.4), radius: 3, y: 2)
-                .offset(x: x - 22, y: -22)
-        }
-    }
-
-    private func formatSeconds(_ t: Double) -> String {
-        let total = Int(t.isFinite && t >= 0 ? t : 0)
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%d:%02d", m, s)
-    }
-
-    private func filmstrip(width w: CGFloat, height h: CGFloat) -> some View {
-        let slots = max(Int((w / 48).rounded()), 6)
-        return HStack(spacing: 0) {
-            if thumbnails.isEmpty {
-                ForEach(0..<slots, id: \.self) { _ in
-                    Rectangle().fill(Color.secondary.opacity(0.25))
-                        .frame(width: w / CGFloat(slots), height: h)
-                        .overlay(Rectangle().stroke(.black.opacity(0.15), lineWidth: 0.5))
-                }
-            } else {
-                ForEach(0..<slots, id: \.self) { i in
-                    // Map this slot's time into the full thumbnail range
-                    let t = windowStart + (Double(i) + 0.5) / Double(slots) * windowDuration
-                    let nearest = thumbnails.min { abs($0.time - t) < abs($1.time - t) }
-                    if let image = nearest?.image {
-                        Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                            .frame(width: w / CGFloat(slots), height: h).clipped()
-                    } else {
-                        Rectangle().fill(H3.ink100).frame(width: w / CGFloat(slots), height: h)
-                    }
-                }
-            }
-        }.frame(width: w, height: h)
-    }
-
-    /// Glossy h3 grab handle: brand-blue gradient pill with white gloss
-    /// overlay and three grip dots, matching the rest of the h3 button kit.
-    /// Expanded hit zone (handleW × height + overhang) keeps it trackpad-friendly.
-    private func handle(isStart: Bool, height: CGFloat) -> some View {
-        let totalHeight = height + handleOverhang * 2
-        return ZStack {
-            RoundedRectangle(cornerRadius: handleW / 2, style: .continuous)
-                .fill(H3.gradDeep)
-                .overlay(
-                    RoundedRectangle(cornerRadius: handleW / 2, style: .continuous)
-                        .strokeBorder(Color.black.opacity(0.30), lineWidth: 1)
-                )
-                .frame(width: handleW, height: totalHeight)
-            // White gloss highlight on the top half — h3 signature finish.
-            RoundedRectangle(cornerRadius: handleW / 2, style: .continuous)
-                .fill(H3.glossTop)
-                .frame(width: handleW, height: totalHeight)
-                .allowsHitTesting(false)
-            // Three vertical grip dots in white for contrast on blue.
-            VStack(spacing: 3) {
-                ForEach(0..<3, id: \.self) { _ in
-                    Circle()
-                        .fill(Color.white.opacity(0.85))
-                        .frame(width: 2.5, height: 2.5)
-                }
-            }
-        }
-        .shadow(color: H3.shadowDrop, radius: 3, y: 1)
-        .frame(width: handleW, height: totalHeight)
-        .contentShape(Rectangle())
-    }
-
-    // MARK: Math
-
-    private func xPos(_ seconds: Double, _ w: CGFloat) -> CGFloat? {
-        let span = windowDuration
-        guard span > 0 else { return nil }
-        let pct = (seconds - windowStart) / span
-        guard pct.isFinite else { return nil }
-        return w * CGFloat(min(max(pct, 0), 1))
-    }
-
-    private func secondsFor(_ x: CGFloat, _ w: CGFloat) -> Double {
-        let pct = min(max(Double(x / max(w, 1)), 0), 1)
-        return windowStart + pct * windowDuration
-    }
-
-    // MARK: Gestures
-
-    private func handleDrag(isStart: Bool, width w: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named(timelineSpace)).onChanged { v in
-            let sec = secondsFor(v.location.x, w)
-            if safeZoom > 1 {
-                let delta = v.location.x < 12 ? -windowDuration * 0.02 : v.location.x > w - 12 ? windowDuration * 0.02 : 0
-                if delta != 0 { center = min(max((center ?? (start + end) / 2) + delta, windowDuration / 2), safeDuration - windowDuration / 2) }
-            }
-            if isStart { start = min(max(sec, 0), end - minSelection) }
-            else       { end   = min(max(sec, start + minSelection), safeDuration) }
-            onScrub(isStart ? start : end)
-        }.onEnded { _ in onScrubEnd(isStart ? start : end) }
-    }
-
-    private func selectionDrag(width w: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .named(timelineSpace))
-            .onChanged { v in
-                if dragAnchor == nil {
-                    dragAnchor = (start, end, v.startLocation.x)
-                }
-                guard let a = dragAnchor else { return }
-                let dxPct = Double((v.location.x - a.startX) / max(w, 1))
-                let deltaSec = dxPct * windowDuration
-                let length = max(a.endS - a.startS, minSelection)
-                var newStart = a.startS + deltaSec
-                newStart = min(max(newStart, 0), safeDuration - length)
-                start = newStart
-                end = newStart + length
-            }
-            .onEnded { _ in dragAnchor = nil }
-    }
-
-    // MARK: Thumbnails
-
-    @MainActor
-    private func loadThumbnails() async {
-        guard let url = previewURL, safeDuration > 0 else { thumbnails = []; return }
-        let lower = windowStart, span = windowDuration
-        let key = "\(url.absoluteString)|\(lower)|\(span)"
-        if let cached = FilmstripCache.shared.get(key) { thumbnails = cached; return }
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 160, height: 90)
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
-        let times = (0..<24).map { lower + span * (Double($0) + 0.5) / 24 }
-        var images: [TimedThumbnail] = times.map { TimedThumbnail(time: $0, image: nil) }
-        thumbnails = images
-        for index in times.indices.sorted(by: { abs(times[$0] - currentTime) < abs(times[$1] - currentTime) }) {
-            guard !Task.isCancelled else { generator.cancelAllCGImageGeneration(); return }
-            let result = try? await generator.image(at: CMTime(seconds: times[index], preferredTimescale: 600))
-            guard !Task.isCancelled else { generator.cancelAllCGImageGeneration(); return }
-            images[index] = TimedThumbnail(time: times[index], image: result.map { NSImage(cgImage: $0.image, size: .zero) })
-            thumbnails = images
-        }
-        FilmstripCache.shared.set(key, images)
-    }
-}
-
-// MARK: - Scroll-wheel / middle-click catcher
-
-struct FilmstripScrollCatcher: NSViewRepresentable {
-    let onScroll: (CGFloat, CGFloat, NSEvent.ModifierFlags) -> Void
-    let onMiddleClick: (CGFloat) -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let v = _ScrollCatcherView()
-        v.onScroll = onScroll
-        v.onMiddleClick = onMiddleClick
-        return v
-    }
-    func updateNSView(_ nsView: NSView, context: Context) {
-        if let v = nsView as? _ScrollCatcherView {
-            v.onScroll = onScroll
-            v.onMiddleClick = onMiddleClick
-        }
-    }
-}
-
-private final class _ScrollCatcherView: NSView {
-    var onScroll: ((CGFloat, CGFloat, NSEvent.ModifierFlags) -> Void)?
-    var onMiddleClick: ((CGFloat) -> Void)?
-    private var monitor: Any?
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
-        guard window != nil else { return }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .otherMouseDown]) { [weak self] ev in
-            guard let self, let win = self.window, ev.window === win else { return ev }
-            let inView = self.convert(ev.locationInWindow, from: nil)
-            guard self.bounds.contains(inView) else { return ev }
-            if ev.type == .scrollWheel {
-                self.onScroll?(ev.scrollingDeltaX, ev.scrollingDeltaY, ev.modifierFlags)
-                return nil
-            } else if ev.type == .otherMouseDown {
-                self.onMiddleClick?(inView.x)
-                return nil
-            }
-            return ev
-        }
-    }
-
-    deinit {
-        if let m = monitor { NSEvent.removeMonitor(m) }
-    }
-}
-
 // MARK: - Time entry field
 
 struct TimeField: View {
@@ -919,7 +488,9 @@ struct TimeField: View {
                             error = invalid ? "Enter a time from \(MediaTime.format(min)) to \(MediaTime.format(max))." : nil
                         }
                     }
-                    .onChange(of: seconds) { _, value in if !focused { text = MediaTime.format(value) } }
+                    .onChange(of: seconds) { _, value in
+                        if !focused { text = MediaTime.format(value); invalid = false; error = nil }
+                    }
                     .onAppear { text = MediaTime.format(seconds) }
             }
             if let error { Text(error).font(.caption2).foregroundStyle(H3.red) }

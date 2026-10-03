@@ -98,6 +98,7 @@ nonisolated enum ClipAccuracy: String, Codable, CaseIterable { case accurate, fa
 nonisolated enum MediaSource: Codable, Hashable {
     case online(String)
     case local(URL)
+    var isOnline: Bool { if case .online = self { return true }; return false }
     var value: String {
         switch self { case .online(let link): return link; case .local(let file): return file.absoluteString }
     }
