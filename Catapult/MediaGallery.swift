@@ -160,8 +160,7 @@ struct MediaActionStyle: ButtonStyle {
         var body: some View {
             configuration.label.font(.system(size: 12, weight: .medium))
                 .frame(minWidth: 28, minHeight: 28)
-                .background(RoundedRectangle(cornerRadius: 7).fill(H3.blue400.opacity(hover ? 0.16 : 0.06)))
-                .foregroundStyle(enabled ? H3.blue400 : H3.ink300)
+                .foregroundStyle(enabled ? (hover ? H3.blue500 : H3.blue400) : H3.ink300)
                 .scaleEffect(configuration.isPressed ? 0.96 : 1)
                 .onHover { hover = $0 }
                 .animation(H3.easeOut, value: hover)

@@ -151,8 +151,7 @@ struct MenuBarRootView: View {
             }
             Spacer()
             Button {
-                GalleryNavigation.shared.requestID += 1
-                openSettings()
+                openWindow(id: "gallery")
                 NSApp.activate(ignoringOtherApps: true)
             } label: { Image(systemName: "square.grid.2x2") }
             .buttonStyle(MediaActionStyle()).help("Open media gallery")
@@ -216,8 +215,9 @@ struct MenuBarRootView: View {
             HStack(spacing: 8) {
                 Image(systemName: "link")
                     .foregroundStyle(.secondary)
-                TextField("Paste a video link…", text: $manualURL)
+                TextField("", text: $manualURL, prompt: Text("Paste a video link…").foregroundStyle(H3.ink500))
                     .textFieldStyle(.plain)
+                    .foregroundStyle(H3.ink900)
                     .focused($urlFieldFocused)
                     .onSubmit { startDownload(mode: .video) }
                 if !manualURL.isEmpty {
@@ -235,7 +235,7 @@ struct MenuBarRootView: View {
             .padding(.vertical, 9)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(.background.opacity(0.65))
+                    .fill(H3.cardFill)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .strokeBorder(.separator, lineWidth: 0.5)
@@ -284,22 +284,25 @@ struct MenuBarRootView: View {
                 .transition(.opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98)))
             }
 
-            HStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 ActionButton(title: "Download",
                              icon: "arrow.down.to.line",
                              tint: .accentColor,
                              filled: true,
                              action: { startDownload(mode: .video) },
                              longPress: { showVideoOptions = true })
+                    .frame(height: 108)
                     .popover(isPresented: $showVideoOptions, arrowEdge: .bottom) {
                         VideoQuickSettingsPopover()
                     }
+                VStack(spacing: 8) {
                 ActionButton(title: "Audio",
                              icon: "music.note",
                              tint: .purple,
                              filled: false,
                              action: { startDownload(mode: .audio) },
                              longPress: { showAudioOptions = true })
+                    .frame(height: 50)
                     .popover(isPresented: $showAudioOptions, arrowEdge: .bottom) {
                         AudioQuickSettingsPopover()
                     }
@@ -309,6 +312,9 @@ struct MenuBarRootView: View {
                              filled: false,
                              action: { startCut() },
                              longPress: nil)
+                    .frame(height: 50)
+                }
+                .frame(maxWidth: .infinity)
             }
             .disabled(manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .opacity(manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.5 : 1)
@@ -402,7 +408,7 @@ struct MenuBarRootView: View {
     // MARK: Background
 
     private var backgroundLayer: some View {
-        Rectangle().fill(.ultraThinMaterial)
+        H3.ink50
     }
 
     // MARK: Actions
@@ -593,6 +599,7 @@ struct ActionButton: View {
         }
         .font(.system(size: 12, weight: .semibold))
         .frame(maxWidth: .infinity)
+        .frame(maxHeight: .infinity)
         .padding(.vertical, 8)
         .background {
             RoundedRectangle(cornerRadius: 9, style: .continuous)

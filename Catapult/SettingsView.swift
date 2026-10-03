@@ -7,7 +7,6 @@ struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(DependencyManager.self) private var dependencies
     @Environment(DownloadManager.self) private var downloads
-    @State private var navigation = GalleryNavigation.shared
     @State private var selectedTab: SettingsTab = .general
     @State private var tabRailPage = 0
 
@@ -29,8 +28,6 @@ struct SettingsView: View {
         .environment(settings)
         .environment(dependencies)
         .environment(downloads)
-        .onAppear { if navigation.requestID > 0 { selectedTab = .history } }
-        .onChange(of: navigation.requestID) { _, _ in selectedTab = .history }
     }
 
     private var settingsTabRail: some View {
@@ -143,7 +140,6 @@ struct SettingsView: View {
         case .terminal: TerminalTab()
         case .advanced: AdvancedSettingsTab()
         case .dependencies: DependenciesTab()
-        case .history: HistoryTab()
         case .about: AboutTab()
         }
     }
@@ -160,7 +156,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     case terminal
     case advanced
     case dependencies
-    case history
     case about
 
     var id: String { rawValue }
@@ -177,7 +172,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "Terminal"
         case .advanced: return "Advanced"
         case .dependencies: return "Dependencies"
-        case .history: return "Gallery"
         case .about: return "About"
         }
     }
@@ -194,7 +188,6 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "terminal"
         case .advanced: return "slider.horizontal.3"
         case .dependencies: return "shippingbox"
-        case .history: return "square.grid.2x2"
         case .about: return "info.circle"
         }
     }
@@ -386,6 +379,7 @@ private struct SettingsRailScrollMonitor: NSViewRepresentable {
 private struct SettingsPage<Content: View>: View {
     let title: String
     let subtitle: String
+    var bento = false
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -403,7 +397,9 @@ private struct SettingsPage<Content: View>: View {
                 .padding(.horizontal, 4)
                 .padding(.top, 2)
 
-                content()
+                if bento {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], alignment: .leading, spacing: 14) { content() }
+                } else { content() }
             }
             .frame(maxWidth: 1040, alignment: .leading)
             .padding(.horizontal, 18)
@@ -423,7 +419,7 @@ private struct GeneralSettingsTab: View {
     var body: some View {
         @Bindable var s = settings
         SettingsPage(title: "general",
-                     subtitle: "downloads, speed, clipboard behavior, and the little bits you reach for most.") {
+                     subtitle: "downloads, speed, clipboard behavior, and the little bits you reach for most.", bento: true) {
                 GeneralSettingsCard(title: "Downloads") {
                     HStack(spacing: 12) {
                         SettingsGlyph(systemName: "folder")
@@ -681,10 +677,6 @@ private struct SettingsGlyph: View {
             .font(.system(size: 14, weight: .semibold))
             .foregroundStyle(H3.blue400)
             .frame(width: 28, height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
-                    .fill(H3.blue50)
-            )
     }
 }
 
@@ -2326,7 +2318,7 @@ enum AppVersion {
 
 // MARK: - History tab
 
-private struct HistoryTab: View {
+struct GalleryView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(DownloadManager.self) private var downloads
     @State private var library = MediaLibrary.shared

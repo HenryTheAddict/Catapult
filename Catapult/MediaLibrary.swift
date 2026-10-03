@@ -63,9 +63,3 @@ nonisolated enum LibraryScan {
         }).sorted { $0.finishedAt > $1.finishedAt }
     }
 }
-
-@Observable @MainActor final class GalleryNavigation {
-    static let shared = GalleryNavigation()
-    var requestID = 0
-    private init() {}
-}

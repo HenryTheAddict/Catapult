@@ -33,6 +33,18 @@ struct CatapultApp: App {
                 .preferredColorScheme(preferredScheme)
         }
 
+        Window("Catapult — Gallery", id: "gallery") {
+            GalleryView()
+                .environment(settings)
+                .environment(downloads)
+                .preferredColorScheme(preferredScheme)
+                .frame(minWidth: 760, minHeight: 560)
+                .h3WindowChrome()
+        }
+        .defaultLaunchBehavior(.suppressed)
+        .defaultSize(width: 1000, height: 740)
+        .windowResizability(.automatic)
+
         Window("Catapult — Trim", id: "cut") {
             CutWindowHost()
                 .environment(settings)

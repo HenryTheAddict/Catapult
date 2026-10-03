@@ -117,15 +117,12 @@ struct CutWindowHost: View {
                         Button("Set start", systemImage: "inset.filled.leading") { startBinding.wrappedValue = currentTime }.help("Set start at playhead (I)")
                         Button("Set end", systemImage: "inset.filled.trailing") { endBinding.wrappedValue = currentTime }.help("Set end at playhead (O)")
                     }.disabled(busy || duration <= 0)
-                    HStack(spacing: 16) {
-                        Picker("Export", selection: $asAudio) { Text("Video").tag(false); Text("Audio only").tag(true) }.pickerStyle(.segmented).frame(width: 200)
-                        if asAudio {
-                            Picker("Format", selection: $audioFormat) { ForEach(AudioFormat.allCases) { Text($0.label).tag($0) } }
-                        } else {
-                            Picker("Format", selection: $videoContainer) { ForEach(VideoContainer.allCases) { Text($0.label).tag($0) } }
-                            Picker("Quality", selection: $videoQuality) { ForEach(VideoQuality.allCases) { Text($0.label).tag($0) } }
+                    ViewThatFits(in: .horizontal) {
+                        exportOptions
+                        VStack(alignment: .leading, spacing: 10) {
+                            outputKind
+                            outputSettings
                         }
-                        Picker("Cut", selection: $accuracy) { Text("Accurate").tag(ClipAccuracy.accurate); Text("Fast").tag(ClipAccuracy.fast) }.frame(width: 170)
                     }.disabled(busy)
                     Text(accuracy == .accurate ? "Accurate cuts re-encode for precise boundaries." : "Fast cuts copy video at nearby keyframes. Boundaries and duration may differ; quality settings do not apply.")
                         .font(H3.body(size: 11)).foregroundStyle(H3.ink500)
@@ -155,6 +152,27 @@ struct CutWindowHost: View {
             teardownPlayer(); historyTask?.cancel()
             if loadProcess?.isRunning == true { loadProcess?.terminate() }
         }
+    }
+    private var outputKind: some View {
+        HStack(spacing: 12) {
+            Text("Export").fixedSize()
+            Picker("Output", selection: $asAudio) { Text("Video").tag(false); Text("Audio only").tag(true) }
+                .labelsHidden().pickerStyle(.segmented).frame(width: 200)
+        }
+    }
+    private var outputSettings: some View {
+        HStack(spacing: 16) {
+            if asAudio {
+                Picker("Format", selection: $audioFormat) { ForEach(AudioFormat.allCases) { Text($0.label).tag($0) } }
+            } else {
+                Picker("Format", selection: $videoContainer) { ForEach(VideoContainer.allCases) { Text($0.label).tag($0) } }
+                Picker("Quality", selection: $videoQuality) { ForEach(VideoQuality.allCases) { Text($0.label).tag($0) } }
+            }
+            Picker("Cut", selection: $accuracy) { Text("Accurate").tag(ClipAccuracy.accurate); Text("Fast").tag(ClipAccuracy.fast) }.frame(width: 170)
+        }.fixedSize(horizontal: true, vertical: false)
+    }
+    private var exportOptions: some View {
+        HStack(spacing: 16) { outputKind; outputSettings }.fixedSize(horizontal: true, vertical: false)
     }
     private var preview: some View {
         ZStack {
