@@ -379,7 +379,6 @@ private struct SettingsRailScrollMonitor: NSViewRepresentable {
 private struct SettingsPage<Content: View>: View {
     let title: String
     let subtitle: String
-    var bento = false
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -397,9 +396,7 @@ private struct SettingsPage<Content: View>: View {
                 .padding(.horizontal, 4)
                 .padding(.top, 2)
 
-                if bento {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14, alignment: .top)], alignment: .leading, spacing: 14) { content() }
-                } else { content() }
+                content()
             }
             .frame(maxWidth: 1040, alignment: .leading)
             .padding(.horizontal, 18)
@@ -418,219 +415,168 @@ private struct GeneralSettingsTab: View {
 
     var body: some View {
         @Bindable var s = settings
-        SettingsPage(title: "general",
-                     subtitle: "downloads, speed, clipboard behavior, and the little bits you reach for most.", bento: true) {
-                GeneralSettingsCard(title: "Downloads") {
-                    HStack(spacing: 12) {
-                        SettingsGlyph(systemName: "folder")
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Save to")
-                                .font(H3.body(size: 13, weight: .semibold))
-                                .foregroundStyle(H3.ink900)
+        SettingsPage(title: "general", subtitle: "Your files, download speed, and everyday preferences.") {
+            Grid(alignment: .topLeading, horizontalSpacing: 14, verticalSpacing: 14) {
+                GridRow {
+                    GeneralBentoTile(title: "Downloads", symbol: "folder", height: 280) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Save to").font(.system(size: 11)).foregroundStyle(.secondary)
                             Text((settings.downloadFolderPath as NSString).abbreviatingWithTildeInPath)
-                                .font(H3.mono(size: 12))
-                                .foregroundStyle(H3.ink500)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        Spacer(minLength: 12)
-                        SettingsMiniButton(title: "Choose", systemName: "folder.badge.gearshape") {
-                            chooseFolder()
-                        }
-                        SettingsIconButton(systemName: "arrow.up.right.square",
-                                           help: "Open folder") {
-                            NSWorkspace.shared.open(settings.downloadFolderURL)
-                        }
-                    }
-
-                    SettingsDivider()
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .center, spacing: 12) {
-                            SettingsGlyph(systemName: "textformat")
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Filename")
-                                    .font(H3.body(size: 13, weight: .semibold))
-                                    .foregroundStyle(H3.ink900)
-                                Text(settings.filenamePreset.hint)
-                                    .font(H3.body(size: 11))
-                                    .foregroundStyle(H3.ink500)
+                                .font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading).help(settings.downloadFolderPath)
+                            HStack(spacing: 10) {
+                                Button("Choose folder", action: chooseFolder).buttonStyle(.bordered).controlSize(.small)
+                                Button { NSWorkspace.shared.open(settings.downloadFolderURL) } label: { Image(systemName: "arrow.up.right.square") }
+                                    .buttonStyle(MediaActionStyle()).help("Open download folder")
                             }
-                            Spacer(minLength: 0)
                         }
-                            Picker("", selection: $s.filenamePreset) {
-                                ForEach(FilenamePreset.allCases) { p in
-                                    Text(p.label).tag(p)
-                                }
+                        Divider().padding(.vertical, 2)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("File names").font(.system(size: 12, weight: .medium)).fixedSize()
+                                Spacer(minLength: 8)
+                                Picker("Filename preset", selection: $s.filenamePreset) {
+                                    ForEach(FilenamePreset.allCases) { Text($0.label).tag($0) }
+                                }.labelsHidden().frame(width: 130)
                             }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(maxWidth: .infinity)
-
-                        HStack(alignment: .top, spacing: 12) {
-                            Text("Template")
-                                .font(H3.body(size: 12, weight: .semibold))
-                                .foregroundStyle(H3.ink500)
-                                .frame(width: 74, alignment: .leading)
-                                .padding(.top, 7)
+                            Text(settings.filenamePreset.hint).font(.system(size: 11)).foregroundStyle(.secondary)
+                                .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                             if settings.filenamePreset == .custom {
-                                TextField("", text: $s.filenameTemplate,
-                                          prompt: Text("%(title)s [%(id)s].%(ext)s"))
-                                    .textFieldStyle(.plain)
-                                    .font(H3.mono(size: 12))
-                                    .foregroundStyle(H3.ink900)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 8)
-                                    .background(templateFieldBackground)
+                                TextField("Filename template", text: $s.filenameTemplate)
+                                    .textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
+                                    .help("Tokens: %(title)s, %(id)s, %(uploader)s, %(height)s, %(vcodec)s, %(upload_date)s")
                             } else {
-                                Text(settings.filenameTemplate)
-                                    .font(H3.mono(size: 12))
-                                    .foregroundStyle(H3.ink700)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                                Text(settings.filenameTemplate).font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 8)
-                                    .background(templateFieldBackground)
                             }
                         }
-                        Text("Tokens: %(title)s, %(id)s, %(uploader)s, %(height)s, %(vcodec)s, %(upload_date)s.")
-                            .font(H3.body(size: 10))
-                            .foregroundStyle(H3.ink300)
                     }
-                }
-
-                GeneralSettingsCard(title: "Speed") {
-                    SettingsNumberRow(systemName: "square.stack.3d.down.right",
-                                      title: "Simultaneous downloads",
-                                      detail: "Separate links Catapult can run at the same time.",
-                                      value: $s.maxConcurrent,
-                                      range: 1...6)
-                    SettingsDivider()
-                    SettingsNumberRow(systemName: "bolt.horizontal.circle",
-                                      title: "Parallel fragments",
-                                      detail: "Splits supported streams into multiple fragment requests.",
-                                      value: $s.concurrentFragments,
-                                      range: 1...16)
-                }
-
-                GeneralSettingsCard(title: "Quick Actions") {
-                    SettingsNumberRow(systemName: "gauge.with.dots.needle.bottom.50percent",
-                                      title: "Size limit action",
-                                      detail: "Used by the “<N MB” quick download preset.",
-                                      value: $s.quickSizeLimitMB,
-                                      range: 5...500,
-                                      step: 5,
-                                      suffix: " MB")
-                    SettingsDivider()
-                    SettingsToggleRow(systemName: "play.rectangle.on.rectangle",
-                                      title: "Prefer QuickTime-compatible codecs",
-                                      detail: "Uses H.264 / AAC for MP4. Slightly slower, much friendlier.",
-                                      isOn: $s.preferCompatibleCodecs)
-                }
-
-                GeneralSettingsCard(title: "Behavior") {
-                    SettingsToggleRow(systemName: "doc.on.clipboard",
-                                      title: "Watch clipboard for media links",
-                                      isOn: $s.clipboardMonitoring)
-                    SettingsDivider()
-                    SettingsToggleRow(systemName: "bolt.fill",
-                                      title: "Auto-start download on detect",
-                                      isOn: $s.autoStartDownload,
-                                      isDisabled: !settings.clipboardMonitoring)
-                    SettingsDivider()
-                    SettingsToggleRow(systemName: "bell.badge",
-                                      title: "Show notifications",
-                                      isOn: $s.showNotifications)
-                    SettingsDivider()
-                    SettingsToggleRow(systemName: "speaker.wave.2",
-                                      title: "Play sound with notifications",
-                                      isOn: $s.notificationSound,
-                                      isDisabled: !settings.showNotifications)
-                    SettingsDivider()
-                    SettingsToggleRow(systemName: "folder",
-                                      title: "Reveal in Finder when finished",
-                                      isOn: $s.openFolderOnFinish)
-                    SettingsDivider()
-                    SettingsToggleRow(systemName: "doc.on.doc",
-                                      title: "Copy file after download",
-                                      detail: "Puts the finished file on the clipboard.",
-                                      isOn: $s.copyFileAfterDownload)
-                }
-
-                GeneralSettingsCard(title: "Appearance") {
-                    HStack(spacing: 12) {
-                        SettingsGlyph(systemName: "paintbrush")
-                        Text("Theme")
-                            .font(H3.body(size: 13, weight: .semibold))
-                            .foregroundStyle(H3.ink900)
-                        Spacer()
-                        Picker("", selection: $s.appearance) {
-                            ForEach(AppearanceOverride.allCases) { a in
-                                Text(a.label).tag(a)
+                    VStack(spacing: 14) {
+                        GeneralBentoTile(title: "Download speed", symbol: "bolt", height: 168) {
+                            HStack(alignment: .top, spacing: 16) {
+                                BentoNumber(value: $s.maxConcurrent, title: "Downloads", range: 1...6)
+                                Divider().frame(height: 74)
+                                BentoNumber(value: $s.concurrentFragments, title: "Fragments", range: 1...16)
                             }
                         }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(width: 280)
-                    }
-                }
-
-                GeneralSettingsCard(title: "History & Updates") {
-                    SettingsNumberRow(systemName: "clock.arrow.circlepath",
-                                      title: "Downloads kept in history",
-                                      value: $s.historyLimit,
-                                      range: 10...500,
-                                      step: 10)
-                    SettingsDivider()
-                    SettingsToggleRow(systemName: "arrow.down.app",
-                                      title: "Automatically check for app updates",
-                                      isOn: $s.autoCheckForUpdates)
-                        .onChange(of: settings.autoCheckForUpdates) { _, new in
-                            UpdateController.shared.automaticallyChecksForUpdates = new
-                        }
-                    SettingsDivider()
-                    HStack(spacing: 12) {
-                        SettingsGlyph(systemName: "info.circle")
-                        Text("App updates")
-                            .font(H3.body(size: 12))
-                            .foregroundStyle(H3.ink500)
-                        Spacer()
-                        SettingsMiniButton(title: "Check now", systemName: "arrow.clockwise") {
-                            UpdateController.shared.checkForUpdates()
+                        GeneralBentoTile(title: "Appearance", symbol: "paintbrush", height: 98) {
+                            Picker("Theme", selection: $s.appearance) {
+                                ForEach(AppearanceOverride.allCases) { Text($0.label).tag($0) }
+                            }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }
-
-                SettingsMiniButton(title: "Replay onboarding", systemName: "sparkles") {
-                    settings.hasCompletedOnboarding = false
-                    OnboardingLauncher.present()
+                GridRow {
+                    GeneralBentoTile(title: "Clipboard & files", symbol: "doc.on.clipboard", height: 214) {
+                        BentoToggle(title: "Watch clipboard", isOn: $s.clipboardMonitoring)
+                        BentoToggle(title: "Download automatically", isOn: $s.autoStartDownload).disabled(!settings.clipboardMonitoring)
+                        BentoToggle(title: "Copy finished file", isOn: $s.copyFileAfterDownload)
+                        BentoToggle(title: "Reveal in Finder", isOn: $s.openFolderOnFinish)
+                    }
+                    GeneralBentoTile(title: "Notifications", symbol: "bell", height: 214) {
+                        BentoToggle(title: "Show notifications", isOn: $s.showNotifications)
+                        BentoToggle(title: "Play a sound", isOn: $s.notificationSound).disabled(!settings.showNotifications)
+                        Spacer(minLength: 0)
+                        Text("Get notified when a download or clip is ready.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .padding(.leading, 4)
+                GridRow {
+                    GeneralBentoTile(title: "Quick actions", symbol: "bolt.badge.clock", height: 214) {
+                        HStack {
+                            Text("Size limit").font(.system(size: 12, weight: .medium))
+                            Spacer()
+                            Stepper("\(settings.quickSizeLimitMB) MB", value: $s.quickSizeLimitMB, in: 5...500, step: 5)
+                                .font(.system(size: 12, design: .monospaced)).fixedSize()
+                        }
+                        Divider()
+                        BentoToggle(title: "QuickTime-compatible codecs", isOn: $s.preferCompatibleCodecs)
+                        Text("Prefer H.264 video and AAC audio for MP4 files.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    GeneralBentoTile(title: "History & updates", symbol: "clock.arrow.circlepath", height: 214) {
+                        HStack {
+                            Text("Keep downloads").font(.system(size: 12, weight: .medium))
+                            Spacer()
+                            Stepper("\(settings.historyLimit)", value: $s.historyLimit, in: 10...500, step: 10)
+                                .font(.system(size: 12, design: .monospaced)).fixedSize()
+                        }
+                        Divider()
+                        BentoToggle(title: "Check for app updates", isOn: $s.autoCheckForUpdates)
+                            .onChange(of: settings.autoCheckForUpdates) { _, value in UpdateController.shared.automaticallyChecksForUpdates = value }
+                        Button("Check now", systemImage: "arrow.clockwise") { UpdateController.shared.checkForUpdates() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            Button("Replay onboarding", systemImage: "sparkles") {
+                settings.hasCompletedOnboarding = false
+                OnboardingLauncher.present()
+            }.buttonStyle(.borderless).font(.system(size: 12))
         }
-    }
-
-    private var templateFieldBackground: some View {
-        RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
-            .fill(H3.ink50)
-            .overlay(
-                RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
-                    .stroke(H3.cardStroke, lineWidth: 1)
-            )
     }
 
     private func chooseFolder() {
-        let p = NSOpenPanel()
-        p.canChooseFiles = false
-        p.canChooseDirectories = true
-        p.allowsMultipleSelection = false
-        p.prompt = "Use Folder"
-        if p.runModal() == .OK, let url = p.url {
-            settings.downloadFolderPath = url.path
-        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        panel.prompt = "Use Folder"
+        if panel.runModal() == .OK, let url = panel.url { settings.downloadFolderPath = url.path }
     }
 }
 
+private struct GeneralBentoTile<Content: View>: View {
+    let title: String
+    let symbol: String
+    let height: CGFloat
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
+                Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+            }
+            content()
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: height, alignment: .topLeading)
+        .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.primary.opacity(0.09), lineWidth: 1))
+    }
+}
+
+private struct BentoNumber: View {
+    @Binding var value: Int
+    let title: String
+    let range: ClosedRange<Int>
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            Text("\(value)").font(.system(size: 28, weight: .medium, design: .rounded)).monospacedDigit()
+            HStack(spacing: 8) {
+                Button { value = max(range.lowerBound, value - 1) } label: { Image(systemName: "minus") }
+                    .disabled(value <= range.lowerBound).help("Fewer \(title.lowercased())")
+                Button { value = min(range.upperBound, value + 1) } label: { Image(systemName: "plus") }
+                    .disabled(value >= range.upperBound).help("More \(title.lowercased())")
+            }.buttonStyle(MediaActionStyle())
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct BentoToggle: View {
+    let title: String
+    @Binding var isOn: Bool
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(title).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(H3.blue400)
+        }
+    }
+}
 
 
 private struct GeneralSettingsCard<Content: View>: View {

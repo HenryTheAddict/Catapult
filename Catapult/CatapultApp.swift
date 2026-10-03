@@ -32,6 +32,7 @@ struct CatapultApp: App {
                 .environment(downloads)
                 .preferredColorScheme(preferredScheme)
         }
+        .windowResizability(.contentMinSize)
 
         Window("Catapult — Gallery", id: "gallery") {
             GalleryView()
