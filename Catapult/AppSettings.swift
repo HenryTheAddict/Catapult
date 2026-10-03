@@ -524,6 +524,9 @@ final class AppSettings {
     var hasCompletedOnboarding: Bool {
         didSet { UserDefaults.standard.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
     }
+    var heliumProfile: String {
+        didSet { UserDefaults.standard.set(heliumProfile, forKey: "heliumProfile") }
+    }
     var cookieSource: CookieSource {
         didSet {
             UserDefaults.standard.set(cookieSource.rawValue, forKey: "cookieSource")
@@ -604,6 +607,7 @@ final class AppSettings {
         let storedCats = (d.array(forKey: "sponsorBlockCategories") as? [String]) ?? ["sponsor", "selfpromo", "interaction"]
         self.sponsorBlockCategories = Set(storedCats.compactMap { SponsorCategory(rawValue: $0) })
         self.hasCompletedOnboarding = (d.object(forKey: "hasCompletedOnboarding") as? Bool) ?? false
+        self.heliumProfile = d.string(forKey: "heliumProfile") ?? ""
         self.cookieSource = CookieSource(rawValue: d.string(forKey: "cookieSource") ?? "") ?? .off
         self.autoUpdateYtDlpOnLaunch = (d.object(forKey: "autoUpdateYtDlpOnLaunch") as? Bool) ?? true
         self.autoCheckForUpdates     = (d.object(forKey: "autoCheckForUpdates") as? Bool) ?? true

@@ -61,6 +61,7 @@ struct MenuBarRootView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var manualURL: String = ""
     @FocusState private var urlFieldFocused: Bool
     @State private var showVideoOptions = false
@@ -78,16 +79,19 @@ struct MenuBarRootView: View {
             Divider().opacity(0.4)
             contentBody
                 .applePopoverStage(appeared, delay: 0.08)
-            Divider().opacity(0.4)
-            footer
-                .applePopoverStage(appeared, delay: 0.12)
+            if dependencies.state != .ready {
+                Divider().opacity(0.4)
+                footer.applePopoverStage(appeared, delay: 0.10)
+            }
         }
         .frame(width: dropTargeted ? 408 : 440)
         .frame(minHeight: popoverMinHeight, maxHeight: dropTargeted ? 520 : 700)
         .fixedSize(horizontal: false, vertical: true)
         .background(backgroundLayer)
         .clipShape(RoundedRectangle(cornerRadius: dropTargeted ? 18 : 0, style: .continuous))
-        .scaleEffect(dropTargeted ? 0.965 : 1, anchor: .top)
+        .scaleEffect(reduceMotion ? 1 : appeared ? (dropTargeted ? 0.965 : 1) : 0.97, anchor: .top)
+        .opacity(appeared ? 1 : 0)
+        .animation(H3.appleDrift, value: appeared)
         .overlay {
             if dropTargeted {
                 DropTargetOverlay()
@@ -104,7 +108,7 @@ struct MenuBarRootView: View {
             clipboard.checkNow()
             if let url = clipboard.detectedURL { manualURL = url }
             urlFieldFocused = true
-            withAnimation(H3.appleDrift.delay(0.02)) { appeared = true }
+            DispatchQueue.main.async { withAnimation(H3.appleDrift) { appeared = true } }
             if !settings.hasCompletedOnboarding {
                 OnboardingLauncher.present()
             }
@@ -147,6 +151,12 @@ struct MenuBarRootView: View {
             }
             Spacer()
             Button {
+                GalleryNavigation.shared.requestID += 1
+                openSettings()
+                NSApp.activate(ignoringOtherApps: true)
+            } label: { Image(systemName: "square.grid.2x2") }
+            .buttonStyle(MediaActionStyle()).help("Open media gallery")
+            Button {
                 openSettings()
                 NSApp.activate(ignoringOtherApps: true)
             } label: {
@@ -168,7 +178,6 @@ struct MenuBarRootView: View {
                 Button("Open Downloads Folder") {
                     NSWorkspace.shared.open(settings.downloadFolderURL)
                 }
-                Button("Clear Finished") { downloads.clearFinished() }
                 Divider()
                 Button("Check for Updates…") {
                     UpdateController.shared.checkForUpdates()
@@ -320,7 +329,7 @@ struct MenuBarRootView: View {
                 VStack(spacing: 6) {
                     ForEach(downloads.items) { item in
                         DownloadRowView(item: item)
-                            .transition(.opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98)))
+                            .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: -10)).combined(with: .scale(scale: 0.97, anchor: .top)), removal: .opacity))
                     }
                 }
                 .padding(.horizontal, 10)
@@ -366,15 +375,7 @@ struct MenuBarRootView: View {
                 .font(.caption)
             }
             Spacer()
-            if !downloads.items.isEmpty {
-                Button {
-                    downloads.clearFinished()
-                } label: {
-                    Text("Clear finished").font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-            }
+
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -382,7 +383,7 @@ struct MenuBarRootView: View {
 
     private var depStatusPillText: String {
         switch dependencies.state {
-        case .ready:            return "yt-dlp \(dependencies.ytDlpVersion ?? "ready")"
+        case .ready:            return "Ready"
         case .checking:         return "Checking…"
         case .unknown:          return "Preparing…"
         case .downloading(let n, let p): return "Fetching \(n) \(Int(p * 100))%"
@@ -662,13 +663,14 @@ private struct ApplePopoverStage: ViewModifier {
     let appeared: Bool
     let delay: Double
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
         content
             .opacity(appeared ? 1 : 0)
-            .blur(radius: appeared ? 0 : 6)
-            .scaleEffect(appeared ? 1 : 0.985, anchor: .top)
-            .offset(y: appeared ? 0 : 6)
-            .animation(H3.appleDrift.delay(delay), value: appeared)
+            .blur(radius: appeared || reduceMotion ? 0 : 1.5)
+            .scaleEffect(appeared || reduceMotion ? 1 : 0.985, anchor: .top)
+            .offset(y: appeared || reduceMotion ? 0 : 6)
+            .animation(H3.appleDrift.delay(reduceMotion ? 0 : delay / MotionPreferences.shared.speed), value: appeared)
     }
 }
 
@@ -757,6 +759,9 @@ struct DownloadRowView: View {
                     Spacer()
                 }
                 progressSection
+                if let warning = item.cookieWarning {
+                    Label(warning, systemImage: "key.slash").font(.caption2).foregroundStyle(.orange).lineLimit(2)
+                }
             }
         }
         .padding(10)
@@ -794,31 +799,9 @@ struct DownloadRowView: View {
     }
 
     private var thumbnail: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.quaternary)
-            if let t = item.thumbnailURL {
-                if t.isFileURL, let image = NSImage(contentsOf: t) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    AsyncImage(url: t) { phase in
-                        if let img = phase.image {
-                            img.resizable().aspectRatio(contentMode: .fill)
-                        } else {
-                            Image(systemName: "play.rectangle")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            } else {
-                Image(systemName: iconFor(item.mode))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 64, height: 42)
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        MediaPreview(id: item.id, file: item.outputFile.flatMap { item.isActive ? nil : $0 }, thumbnail: item.thumbnailURL, mode: item.mode)
+            .frame(width: 72, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
     }
 
     private func iconFor(_ mode: DownloadMode) -> String {
@@ -859,14 +842,13 @@ struct DownloadRowView: View {
         case .downloading, .postProcessing:
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    ProgressView(value: item.progress)
-                        .progressViewStyle(.linear)
-                        .tint(Color.accentColor)
-                    Text("\(Int(item.progress * 100))%")
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 30, alignment: .trailing)
+                    if item.status == .downloading && item.hasMeasuredProgress {
+                        ProgressView(value: item.progress).progressViewStyle(.linear).tint(Color.accentColor)
+                        Text("\(item.progressEstimated ? "≈" : "")\(Int(item.progress * 100))%")
+                            .font(.system(size: 10, weight: .medium, design: .rounded)).monospacedDigit().foregroundStyle(.secondary)
+                    } else {
+                        ProgressView().controlSize(.mini)
+                    }
                 }
                 HStack {
                     Text(item.statusLine)
@@ -888,12 +870,7 @@ struct DownloadRowView: View {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text("Saved").font(.caption2).foregroundStyle(.secondary)
                 if let u = url {
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([u])
-                    } label: {
-                        Text("Reveal").font(.caption2)
-                    }
-                    .buttonStyle(.borderless)
+                    MediaFileActions(file: u, mode: item.mode)
                 }
                 Spacer()
                 Button {

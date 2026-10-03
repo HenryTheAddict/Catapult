@@ -31,6 +31,8 @@ struct HistoryEntry: Codable, Identifiable, Hashable {
     enum Outcome: String, Codable {
         case finished, failed, cancelled
     }
+    var thumbnailURL: URL? = nil
+    var source: MediaSource? = nil
     let outcome: Outcome
 
     var fileExists: Bool {
@@ -52,9 +54,7 @@ final class HistoryStore {
     private let storeURL: URL
 
     private init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask).first!
-            .appendingPathComponent("Catapult", isDirectory: true)
+        let base = DependencyManager.shared.supportDirectory
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         self.storeURL = base.appendingPathComponent("history.json")
         load()
@@ -98,6 +98,8 @@ final class HistoryStore {
             durationSeconds: item.durationSeconds,
             fileSizeBytes: size,
             finishedAt: Date(),
+            thumbnailURL: item.thumbnailURL,
+            source: item.source,
             outcome: outcome
         )
         // Dedupe by id — re-runs of retry shouldn't produce two entries.

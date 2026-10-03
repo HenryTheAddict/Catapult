@@ -74,6 +74,13 @@ final class DependencyManager {
     }
 
     var supportDirectory: URL {
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["CATAPULT_TEST_SUPPORT"] {
+            let dir = URL(fileURLWithPath: path)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        #endif
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask).first!
         let dir = base.appendingPathComponent("Catapult", isDirectory: true)

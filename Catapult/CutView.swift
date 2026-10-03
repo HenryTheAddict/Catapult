@@ -1,749 +1,443 @@
 import SwiftUI
 import AppKit
-import AVKit
 import AVFoundation
 import Observation
+import UniformTypeIdentifiers
 
-/// Pass a URL through the global-window mechanism (MenuBarExtra can't hand it directly).
-/// THIS IS INCREDIBLY BOTCHED, REWRITING THIS IS NESSICARY!
-
-@Observable
-final class CutCoordinator {
+@Observable final class CutCoordinator {
     static let shared = CutCoordinator()
-    var pendingURL: String = ""
-    private init() {}
+    var pendingURL: String = "" { didSet { pendingSource = .online(pendingURL) } }
+    var pendingSource: MediaSource?
+    private init() {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--trim-source"), arguments.indices.contains(index + 1) {
+            pendingSource = .local(URL(fileURLWithPath: arguments[index + 1]))
+        }
+        #endif
+    }
 }
 
 struct CutWindowHost: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(DependencyManager.self) private var dependencies
     @Environment(AppSettings.self) private var settings
-
-    @State private var url: String = ""
-    @State private var title: String = ""
-    @State private var uploader: String = ""
-    @State private var duration: Double = 0
+    @State private var coordinator = CutCoordinator.shared
+    @State private var source: MediaSource = .online("")
+    @State private var link = ""
+    @State private var title = "Choose a link or media file"
+    @State private var uploader = ""
+    @State private var duration = 0.0
+    @State private var startSeconds = 0.0
+    @State private var endSeconds = 0.0
+    @State private var zoom = 1.0
+    @State private var timelineCenter: Double?
     @State private var thumbnailURL: URL?
-    @State private var loadingInfo = true
-    @State private var loadError: String?
-
-    @State private var startSeconds: Double = 0
-    @State private var endSeconds: Double = 60
-    @State private var asAudio: Bool = false
-
     @State private var previewURL: URL?
-    @State private var loadingPreview = false
-    @State private var previewError: String?
     @State private var player: AVPlayer?
-    @State private var currentTime: Double = 0
+    @State private var currentTime = 0.0
+    @State private var frameStep = 0.1
     @State private var isPlaying = false
+    @State private var muted = false
+    @State private var loopSelection = true
     @State private var timeObserver: Any?
-
-    private var trimDuration: Double {
-        Self.cleanSeconds(duration, fallback: 0)
+    @State private var playerStatusObservation: NSKeyValueObservation?
+    @State private var playbackObservation: NSKeyValueObservation?
+    @State private var playbackEndObserver: NSObjectProtocol?
+    @State private var restartingLoop = false
+    @State private var loadID = UUID()
+    @State private var seekTask: Task<Void, Never>?
+    @State private var loadProcess: Process?
+    @State private var loading = false
+    @State private var loadError: String?
+    @State private var previewError: String?
+    @State private var cookieWarning: String?
+    @State private var asAudio = false
+    @State private var accuracy: ClipAccuracy = .accurate
+    @State private var videoContainer: VideoContainer = .mp4
+    @State private var audioFormat: AudioFormat = .mp3
+    @State private var videoQuality: VideoQuality = .p1080
+    @State private var job: DownloadItem?
+    @State private var rangeHistory: [TrimSelection] = []
+    @State private var redoHistory: [TrimSelection] = []
+    @State private var historyTask: Task<Void, Never>?
+    @State private var startInputInvalid = false
+    @State private var endInputInvalid = false
+    private var selection: TrimSelection { TrimSelection(start: startSeconds, end: endSeconds) }
+    private var selectionIsValid: Bool { MediaTime.valid(start: startSeconds, end: endSeconds, duration: duration) && !startInputInvalid && !endInputInvalid }
+    private var busy: Bool { job?.isActive == true }
+    private var startBinding: Binding<Double> {
+        Binding(get: { startSeconds }, set: { setRange(start: min($0, max(0, endSeconds - min(0.25, duration))), end: endSeconds) })
     }
-
-    private var selectionIsValid: Bool {
-        let start = Self.cleanSeconds(startSeconds, fallback: -1)
-        let end = Self.cleanSeconds(endSeconds, fallback: -1)
-        return trimDuration > 0 && end > start
+    private var endBinding: Binding<Double> {
+        Binding(get: { endSeconds }, set: { setRange(start: startSeconds, end: max($0, startSeconds + min(0.25, duration))) })
     }
-
     var body: some View {
-        ZStack {
-            // h3 sky background adapts to dark mode automatically.
-            H3SkyBackground()
-
-            VStack(spacing: 0) {
-                header
-                if loadingInfo {
-                    VStack(spacing: 10) {
-                        ProgressView().controlSize(.large)
-                        Text("fetching video info…")
-                            .font(H3.body(size: 13))
-                            .foregroundStyle(H3.ink500)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let err = loadError {
-                    errorView(err)
-                } else {
-                    content
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "scissors").font(.system(size: 24, weight: .medium)).foregroundStyle(H3.blue400)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Trim media").font(H3.display(size: 24, weight: .medium))
+                    Text(title).font(H3.body(size: 12)).foregroundStyle(H3.ink500).lineLimit(1)
                 }
+                Spacer()
+                Button("Open file", systemImage: "folder.badge.plus", action: openFile).disabled(busy)
+            }.padding(.horizontal, 24).padding(.vertical, 16)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Image(systemName: "link").foregroundStyle(H3.ink500)
+                        TextField("Paste a video link", text: $link).textFieldStyle(.roundedBorder).onSubmit(loadLink)
+                        Button("Load", action: loadLink).disabled(busy || link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if loading { ProgressView().controlSize(.small) }
+                    }
+                    if let loadError { Label(loadError, systemImage: "exclamationmark.triangle").foregroundStyle(H3.orange).font(H3.body(size: 12)) }
+                    preview
+                    transport
+                    if let warning = cookieWarning { Label(warning, systemImage: "key.slash").font(H3.body(size: 11)).foregroundStyle(H3.orange) }
+                    HStack {
+                        Label("Selection", systemImage: "timeline.selection").font(H3.body(size: 13, weight: .semibold))
+                        Text(MediaTime.format(max(0, endSeconds - startSeconds))).font(H3.mono(size: 12)).foregroundStyle(H3.blue400)
+                        Spacer()
+                        Button { zoom = max(1, zoom / 1.5) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out")
+                        Button { zoom = min(50, zoom * 1.5) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in")
+                        Button("Fit selection") { timelineCenter = (startSeconds + endSeconds) / 2; zoom = min(50, max(1, duration / max(0.25, (endSeconds - startSeconds) * 1.3))) }
+                        Button("Reset") { setRange(start: 0, end: duration); zoom = 1; timelineCenter = duration / 2 }
+                    }.buttonStyle(.borderless).disabled(duration <= 0 || busy)
+                    FilmstripTrimView(start: startBinding, end: endBinding, zoom: $zoom,
+                                      center: $timelineCenter, duration: duration, currentTime: currentTime,
+                                      previewURL: previewURL, onScrub: { seek($0, precise: false) },
+                                      onScrubEnd: { seek($0, precise: true) })
+                        .frame(height: 74).padding(.top, 14).padding(.bottom, 12).disabled(busy || duration <= 0)
+                    HStack(spacing: 12) {
+                        TimeField(label: "Start", seconds: Binding(get: { startSeconds }, set: { setRange(start: $0, end: endSeconds) }), min: 0, max: max(0, endSeconds - min(0.25, duration)), invalid: $startInputInvalid)
+                        TimeField(label: "End", seconds: Binding(get: { endSeconds }, set: { setRange(start: startSeconds, end: $0) }), min: startSeconds + min(0.25, duration), max: duration, invalid: $endInputInvalid)
+                        Spacer()
+                        Button("Set start", systemImage: "inset.filled.leading") { startBinding.wrappedValue = currentTime }.help("Set start at playhead (I)")
+                        Button("Set end", systemImage: "inset.filled.trailing") { endBinding.wrappedValue = currentTime }.help("Set end at playhead (O)")
+                    }.disabled(busy || duration <= 0)
+                    HStack(spacing: 16) {
+                        Picker("Export", selection: $asAudio) { Text("Video").tag(false); Text("Audio only").tag(true) }.pickerStyle(.segmented).frame(width: 200)
+                        if asAudio {
+                            Picker("Format", selection: $audioFormat) { ForEach(AudioFormat.allCases) { Text($0.label).tag($0) } }
+                        } else {
+                            Picker("Format", selection: $videoContainer) { ForEach(VideoContainer.allCases) { Text($0.label).tag($0) } }
+                            Picker("Quality", selection: $videoQuality) { ForEach(VideoQuality.allCases) { Text($0.label).tag($0) } }
+                        }
+                        Picker("Cut", selection: $accuracy) { Text("Accurate").tag(ClipAccuracy.accurate); Text("Fast").tag(ClipAccuracy.fast) }.frame(width: 170)
+                    }.disabled(busy)
+                    Text(accuracy == .accurate ? "Accurate cuts re-encode for precise boundaries." : "Fast cuts copy video at nearby keyframes. Boundaries and duration may differ; quality settings do not apply.")
+                        .font(H3.body(size: 11)).foregroundStyle(H3.ink500)
+                }.padding(20)
             }
+            Divider()
+            footer.padding(.horizontal, 24).padding(.vertical, 14)
         }
-        .frame(width: 620, height: 580)
-        .background(EscKeyCatcher { NSApp.keyWindow?.close() })
-        .h3WindowChrome()
-        .task(id: url) {
-            guard !url.isEmpty else { return }
-            await loadInfo()
+        .frame(minWidth: 760, idealWidth: 900, minHeight: 640, idealHeight: 720)
+        .background(H3.ink50).h3WindowChrome()
+        .background(TrimKeyboardMonitor { key, modifiers in handleKey(key, modifiers: modifiers) })
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard !busy, let provider = providers.first else { return false }
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                let file = (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) } ?? item as? URL
+                if let file { Task { @MainActor in source = .local(file) } }
+            }
+            return true
         }
-        .task(id: previewURL) { configurePlayer() }
-        .onDisappear { teardownPlayer() }
         .onAppear {
-            FontLoader.registerBundled()
-            let pending = CutCoordinator.shared.pendingURL
-            let picked = ClipboardMonitor.firstDownloadURL(in: pending)
-                ?? pending.trimmingCharacters(in: .whitespacesAndNewlines)
-            if picked != url { url = picked }
+            videoContainer = settings.videoContainer; audioFormat = settings.audioFormat; videoQuality = settings.videoQuality
+            if let pending = coordinator.pendingSource, !busy { source = pending }
+        }
+        .onChange(of: coordinator.pendingSource) { _, pending in if let pending, !busy { source = pending } }
+        .task(id: source) { await loadSource() }
+        .onDisappear {
+            teardownPlayer(); historyTask?.cancel()
+            if loadProcess?.isRunning == true { loadProcess?.terminate() }
         }
     }
-
-    // MARK: - Header
-
-    private var header: some View {
-        HStack(spacing: 12) {
-            // Tiny gradient glyph instead of plain SF symbol — feels h3.
-            GradientGlyph(systemName: "scissors", gradient: H3.gradDeep, size: 22)
-            Text("trim & download")
-                .font(H3.display(size: 22, weight: .medium))
-                .foregroundStyle(H3.ink900)
-            Spacer()
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 12)
-    }
-
-    private func errorView(_ msg: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(H3.orange).font(.largeTitle)
-            Text("couldn't load video")
-                .font(H3.display(size: 20, weight: .medium))
-                .foregroundStyle(H3.ink900)
-            Text(msg)
-                .font(H3.body(size: 12))
-                .foregroundStyle(H3.ink500)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
-            H3Button(gradient: H3.gradDeep) {
-                Task { await loadInfo() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.clockwise")
-                    Text("retry")
-                }
-            }
-            .fixedSize()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - Main content
-
-    @ViewBuilder
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            videoPreview
-
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(H3.body(size: 14, weight: .semibold))
-                        .foregroundStyle(H3.ink900)
-                        .lineLimit(1).truncationMode(.tail)
-                    if !uploader.isEmpty {
-                        Text(uploader.lowercased())
-                            .font(H3.body(size: 12))
-                            .foregroundStyle(H3.ink500)
-                    }
-                }
-                Spacer()
-                Text(formatTime(trimDuration))
-                    .font(H3.mono(size: 12, weight: .semibold))
-                    .foregroundStyle(H3.ink500)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(
-                        Capsule().fill(H3.cardFill)
-                    )
-                    .overlay(Capsule().stroke(H3.cardStroke, lineWidth: 1))
-            }
-
-            trimControls
-
-            HStack(spacing: 10) {
-                Toggle(isOn: $asAudio) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "waveform")
-                            .foregroundStyle(asAudio ? H3.blue400 : H3.ink500)
-                        Text("audio only (\(settings.audioFormat.label.lowercased()))")
-                            .font(H3.body(size: 13, weight: .medium))
-                            .foregroundStyle(H3.ink700)
-                    }
-                }
-                .toggleStyle(.switch)
-                .tint(H3.blue400)
-                Spacer()
-            }
-
-            Spacer(minLength: 4)
-
-            HStack {
-                H3Button(gradient: H3.gradDeep, filled: false) {
-                    NSApp.keyWindow?.close()
-                } label: {
-                    Text("cancel")
-                }
-                .fixedSize()
-                .keyboardShortcut(.cancelAction)
-                Spacer()
-                H3Button(gradient: H3.gradDeep) {
-                    startDownload()
-                    NSApp.keyWindow?.close()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down.to.line")
-                        Text(asAudio ? "cut & export audio" : "cut & download")
-                    }
-                }
-                .fixedSize()
-                .keyboardShortcut(.defaultAction)
-                .opacity(selectionIsValid ? 1 : 0.4)
-                .disabled(!selectionIsValid)
-            }
-        }
-        .padding(20)
-    }
-
-    // MARK: - Video preview
-
-    @ViewBuilder
-    private var videoPreview: some View {
+    private var preview: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
-                .fill(Color.black)
-                .aspectRatio(16/9, contentMode: .fit)
-
-            if let player {
-                VideoPlayer(player: player)
-                    .aspectRatio(16/9, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: H3.radius3, style: .continuous))
-            } else if loadingPreview {
-                VStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 14).fill(Color.black)
+            if let player { TrimPlaybackSurface(player: player) }
+            else if let thumbnailURL { AsyncImage(url: thumbnailURL) { $0.resizable().scaledToFit() } placeholder: { ProgressView() } }
+            else { Image(systemName: asAudio ? "waveform" : "play.rectangle").font(.system(size: 42)).foregroundStyle(.white.opacity(0.4)) }
+            if loading { ProgressView().tint(.white) }
+            if let previewError {
+                Text(previewError).font(H3.body(size: 12)).foregroundStyle(.white)
+                    .padding(10).background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 8)).frame(maxHeight: .infinity, alignment: .bottom).padding(10)
+            }
+        }.frame(height: 180).clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+    private var transport: some View {
+        HStack(spacing: 10) {
+            Button { seek(startSeconds, precise: true) } label: { Image(systemName: "backward.end") }.help("Jump to selection start")
+            Button(action: togglePlayback) { Image(systemName: isPlaying ? "pause.fill" : "play.fill") }.help("Play / pause (Space)")
+            Button { seek(endSeconds, precise: true) } label: { Image(systemName: "forward.end") }.help("Jump to selection end")
+            Button { muted.toggle(); player?.isMuted = muted } label: { Image(systemName: muted ? "speaker.slash" : "speaker.wave.2") }.help("Mute preview")
+            Toggle("Loop selection", isOn: $loopSelection).toggleStyle(.checkbox)
+            Spacer()
+            Text("\(MediaTime.format(currentTime)) / \(MediaTime.format(duration))").font(H3.mono(size: 12))
+        }.buttonStyle(MediaActionStyle()).disabled(player == nil)
+    }
+    @ViewBuilder private var footer: some View {
+        HStack(spacing: 12) {
+            if let job {
+                if job.isActive {
                     ProgressView().controlSize(.small)
-                    Text("loading preview…")
-                        .font(H3.body(size: 12))
-                        .foregroundStyle(.white.opacity(0.8))
-                }
-            } else if let t = thumbnailURL {
-                AsyncImage(url: t) { phase in
-                    if let img = phase.image {
-                        img.resizable().aspectRatio(contentMode: .fit)
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: H3.radius3, style: .continuous))
-                VStack(spacing: 4) {
-                    if let err = previewError {
-                        Text(err.lowercased())
-                            .font(H3.body(size: 12, weight: .medium))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 10).padding(.vertical, 5)
-                            .background(Capsule().fill(.black.opacity(0.65)))
-                    } else {
-                        Text("preview unavailable")
-                            .font(H3.body(size: 12))
-                            .foregroundStyle(.white.opacity(0.8))
-                    }
-                }
-            } else {
-                Image(systemName: "play.rectangle")
-                    .font(.system(size: 40))
-                    .foregroundStyle(.white.opacity(0.4))
-            }
-        }
-        .aspectRatio(16/9, contentMode: .fit)
-        .overlay(
-            RoundedRectangle(cornerRadius: H3.radius3, style: .continuous)
-                .stroke(H3.cardStroke, lineWidth: 1)
-        )
-        .shadow(color: H3.shadowDrop.opacity(0.4), radius: 10, y: 4)
-    }
-
-    // MARK: - Trim controls
-
-    private var trimControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Selection info row — three monospaced pills.
-            HStack(spacing: 8) {
-                timePill(formatTime(startSeconds), tint: H3.ink500)
-                Spacer()
-                timePill("selection · \(formatTime(max(endSeconds - startSeconds, 0)))",
-                         tint: H3.blue400, emphatic: true)
-                Spacer()
-                timePill(formatTime(endSeconds), tint: H3.ink500)
-            }
-
-            SafeTrimRangeView(
-                start: $startSeconds,
-                end: $endSeconds,
-                duration: max(trimDuration, 1),
-                currentTime: currentTime,
-                onScrub: scrub(to:)
-            )
-            .frame(height: 88)
-
-            HStack(spacing: 8) {
-                miniButton("set start", system: "arrow.down.to.line.compact") {
-                    if let p = player {
-                        startSeconds = min(currentCMTime(from: p), max(endSeconds - 0.25, 0))
-                    }
-                }
-                miniButton("set end", system: "arrow.up.to.line.compact") {
-                    if let p = player {
-                        endSeconds = max(currentCMTime(from: p), min(startSeconds + 0.25, trimDuration))
-                    }
-                }
-                Spacer()
-                TimeField(label: "start", seconds: $startSeconds, max: trimDuration)
-                TimeField(label: "end", seconds: $endSeconds, max: trimDuration)
-            }
-        }
-        .onChange(of: startSeconds) { _, _ in clampTrimSelection() }
-        .onChange(of: endSeconds) { _, _ in clampTrimSelection() }
-    }
-
-    /// h3-style pill for time readouts. emphatic = filled blue chip.
-    private func timePill(_ text: String, tint: Color, emphatic: Bool = false) -> some View {
-        Text(text)
-            .font(H3.mono(size: 11, weight: .semibold))
-            .foregroundStyle(emphatic ? Color.white : tint)
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(
-                Capsule().fill(emphatic
-                    ? AnyShapeStyle(H3.gradDeep)
-                    : AnyShapeStyle(H3.cardFill))
-            )
-            .overlay(
-                Capsule().stroke(H3.cardStroke, lineWidth: emphatic ? 0 : 1)
-            )
-    }
-
-    /// Compact h3 chip-button used for the Set Start / Set End row.
-    private func miniButton(_ label: String, system: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: system)
-                Text(label)
-            }
-            .font(H3.body(size: 11, weight: .semibold))
-            .foregroundStyle(H3.blue400)
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(
-                Capsule().fill(H3.cardFill)
-            )
-            .overlay(
-                Capsule().stroke(H3.blue400.opacity(0.35), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Player
-
-    private func configurePlayer() {
-        teardownPlayer()
-        guard let u = previewURL else { return }
-        let asset = AVURLAsset(url: u)
-        let item = AVPlayerItem(asset: asset)
-        let p = AVPlayer(playerItem: item)
-        p.isMuted = false
-        self.player = p
-        let interval = CMTime(seconds: 0.2, preferredTimescale: 600)
-        self.timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { t in
-            currentTime = Self.cleanSeconds(t.seconds, fallback: 0)
+                    Text(job.statusLine).font(H3.body(size: 12)).lineLimit(1)
+                    Button("Cancel export", systemImage: "xmark.circle") { downloads.cancel(job) }
+                } else if case .finished(let file?) = job.status {
+                    Label("Clip saved", systemImage: "checkmark.circle.fill").foregroundStyle(H3.green)
+                    MediaFileActions(file: file, mode: job.mode)
+                } else if case .failed(let message) = job.status {
+                    Text(message).font(H3.body(size: 11)).foregroundStyle(H3.red).lineLimit(2)
+                    Button("Retry", systemImage: "arrow.clockwise") { downloads.retry(job) }
+                } else { Text("Export cancelled").foregroundStyle(H3.ink500) }
+            } else { Text("Original files stay untouched.").font(H3.body(size: 12)).foregroundStyle(H3.ink500) }
+            Spacer()
+            Button(asAudio ? "Export audio clip" : "Export video clip", systemImage: "arrow.down.to.line", action: export)
+                .buttonStyle(.borderedProminent).disabled(!selectionIsValid || busy || loading)
+                .keyboardShortcut(.return, modifiers: .command)
         }
     }
-
+    private func openFile() {
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.movie, .audio]; panel.allowsMultipleSelection = false
+        panel.begin { response in if response == .OK, let file = panel.url { source = .local(file) } }
+    }
+    private func loadLink() {
+        guard !busy, let value = ClipboardMonitor.firstDownloadURL(in: link) else { loadError = "Enter a valid media link."; return }
+        source = .online(value)
+    }
+    private func setRange(start: Double, end: Double) {
+        guard duration > 0 else { return }
+        startSeconds = min(max(0, start), duration)
+        endSeconds = min(max(0, end), duration)
+        historyTask?.cancel()
+        historyTask = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            rememberRange()
+        }
+    }
+    private func rememberRange() {
+        if rangeHistory.last != selection { rangeHistory.append(selection); redoHistory.removeAll() }
+        if rangeHistory.count > 100 { rangeHistory.removeFirst() }
+    }
+    private func undoRange(redo: Bool) {
+        historyTask?.cancel()
+        if redo {
+            guard let next = redoHistory.popLast() else { return }
+            rangeHistory.append(next); startSeconds = next.start; endSeconds = next.end
+        } else {
+            rememberRange()
+            guard rangeHistory.count > 1 else { return }
+            redoHistory.append(rangeHistory.removeLast())
+            let previous = rangeHistory.last!; startSeconds = previous.start; endSeconds = previous.end
+        }
+    }
+    private func handleKey(_ key: String, modifiers: NSEvent.ModifierFlags) -> Bool {
+        if modifiers.contains(.command), key.lowercased() == "z" { undoRange(redo: modifiers.contains(.shift)); return true }
+        guard !modifiers.contains(.command), !busy, duration > 0 else { return false }
+        switch key.lowercased() {
+        case " ": togglePlayback()
+        case "i": startBinding.wrappedValue = currentTime
+        case "o": endBinding.wrappedValue = currentTime
+        case "left": seek(currentTime - (modifiers.contains(.shift) ? 1 : frameStep), precise: true)
+        case "right": seek(currentTime + (modifiers.contains(.shift) ? 1 : frameStep), precise: true)
+        default: return false
+        }
+        return true
+    }
+    private func togglePlayback() {
+        guard let player else { return }
+        if player.rate != 0 { player.pause(); isPlaying = false }
+        else {
+            if currentTime >= duration || (loopSelection && (currentTime < startSeconds || currentTime >= endSeconds)) { seek(loopSelection ? startSeconds : 0, precise: true) }
+            player.play(); isPlaying = true
+        }
+    }
+    private func seek(_ seconds: Double, precise: Bool) {
+        seekTask?.cancel()
+        let target = min(max(0, seconds), duration)
+        currentTime = target
+        seekTask = Task {
+            if !precise { try? await Task.sleep(for: .milliseconds(35)) }
+            guard !Task.isCancelled, let player else { return }
+            let tolerance = precise ? CMTime.zero : CMTime(seconds: 0.08, preferredTimescale: 600)
+            await player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance)
+            if !Task.isCancelled { seekTask = nil }
+        }
+    }
     private func teardownPlayer() {
-        if let o = timeObserver, let p = player {
-            p.removeTimeObserver(o)
-        }
-        timeObserver = nil
-        player?.pause()
-        player = nil
+        seekTask?.cancel()
+        if let observer = timeObserver, let player { player.removeTimeObserver(observer) }
+        if let playbackEndObserver { NotificationCenter.default.removeObserver(playbackEndObserver) }
+        playbackEndObserver = nil; playbackObservation = nil; restartingLoop = false
+        timeObserver = nil; playerStatusObservation = nil; player?.pause(); player = nil; isPlaying = false
     }
-
-    private func scrub(to seconds: Double) {
-        guard let p = player else { return }
-        let clean = min(max(Self.cleanSeconds(seconds, fallback: 0), 0), max(trimDuration, 0))
-        let t = CMTime(seconds: clean, preferredTimescale: 600)
-        p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
-    }
-
-    private func currentCMTime(from p: AVPlayer) -> Double {
-        let t = p.currentTime().seconds
-        return t.isFinite ? max(0, min(t, trimDuration)) : 0
-    }
-
-    // MARK: - Info + preview URL loading
-
-    private func loadInfo() async {
-        let requestURL = url
-        loadingInfo = true
-        loadError = nil
-        previewError = nil
-        previewURL = nil
-        thumbnailURL = nil
+    private func configurePlayer(_ file: URL) async {
         teardownPlayer()
-        currentTime = 0
-        startSeconds = 0
-        endSeconds = 0
-        let dep = dependencies
-        guard FileManager.default.fileExists(atPath: dep.ytDlpPath.path) else {
-            loadingInfo = false
-            loadError = "yt-dlp is not yet installed."
-            return
+        let asset = AVURLAsset(url: file)
+        let tracks = try? await asset.loadTracks(withMediaType: .video)
+        if let track = tracks?.first, let fps = try? await track.load(.nominalFrameRate), fps > 0 { frameStep = 1 / Double(fps) }
+        guard !Task.isCancelled else { return }
+        let player = AVPlayer(playerItem: AVPlayerItem(asset: asset)); player.isMuted = muted
+        self.player = player
+        let generation = loadID
+        playerStatusObservation = player.currentItem?.observe(\.status, options: [.new]) { item, _ in
+            if item.status == .failed { Task { @MainActor in
+                guard loadID == generation, self.player === player else { return }
+                previewError = "Preview unavailable. The selected range can still be exported."
+            } }
         }
-
-        var args = ["--dump-single-json", "--no-warnings", "--no-playlist",
-                    "--skip-download",
-                    "--js-runtimes", "deno",
-                    "--js-runtimes", "node",
-                    "--js-runtimes", "bun",
-                    "--js-runtimes", "quickjs"]
-        if SupportedSite.match(url: requestURL) == .youtube {
-            args.append(contentsOf: [
-                "--extractor-args", "youtube:player_client=default,ios,web_safari,web_embedded,-tv"
-            ])
-        }
-        args.append(contentsOf: await CookieArgs.flags(for: requestURL))
-        args.append(requestURL)
-
-        let data: Data? = await run(dep.ytDlpPath, args)
-
-        guard requestURL == url else { return }
-        guard let data,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            loadingInfo = false
-            loadError = "Could not reach this link or parse the response."
-            return
-        }
-
-        title = obj["title"] as? String ?? url
-        uploader = obj["uploader"] as? String ?? ""
-        duration = Self.seconds(from: obj["duration"])
-        if let s = obj["thumbnail"] as? String, let u = URL(string: s) {
-            thumbnailURL = u
-        }
-        if trimDuration > 0 {
-            endSeconds = min(60, trimDuration)
-        } else {
-            loadError = "This link did not report a usable duration for trimming."
-        }
-        loadingInfo = false
-        if loadError == nil {
-            await loadPreviewURL(for: requestURL)
-        }
-    }
-
-    private func loadPreviewURL(for requestURL: String) async {
-        loadingPreview = true
-        defer { loadingPreview = false }
-        // Progressive mp4 streams play directly in AVPlayer. Ask yt-dlp for
-        // the best direct preview URL it can find.
-        let formatString = "b[ext=mp4][protocol^=https][vcodec!=none][acodec!=none]/22/18/best"
-        var args = [
-            "-g", "-f", formatString, "--no-warnings", "--no-playlist",
-            "--js-runtimes", "deno",
-            "--js-runtimes", "node",
-            "--js-runtimes", "bun",
-            "--js-runtimes", "quickjs"
-        ]
-        if SupportedSite.match(url: requestURL) == .youtube {
-            args.append(contentsOf: [
-                "--extractor-args", "youtube:player_client=default,ios,web_safari,web_embedded,-tv"
-            ])
-        }
-        args.append(contentsOf: await CookieArgs.flags(for: requestURL))
-        args.append(requestURL)
-        guard let data = await run(dependencies.ytDlpPath, args),
-              let out = String(data: data, encoding: .utf8) else {
-            guard requestURL == url else { return }
-            previewError = "No playable preview URL"
-            return
-        }
-        guard requestURL == url else { return }
-        let line = out
-            .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
-            .first { !$0.isEmpty }
-            .map(String.init) ?? ""
-        if let u = URL(string: line) {
-            previewURL = u
-        } else {
-            previewError = "No playable preview URL"
-        }
-    }
-
-    private func run(_ exe: URL, _ args: [String]) async -> Data? {
-        await withCheckedContinuation { cont in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let t = Process()
-                t.executableURL = exe
-                t.arguments = args
-                t.environment = DependencyManager.enhancedEnvironment
-                let out = Pipe()
-                t.standardOutput = out
-                t.standardError = Pipe()
-                do {
-                    try t.run()
-                    let d = out.fileHandleForReading.readDataToEndOfFile()
-                    t.waitUntilExit()
-                    cont.resume(returning: t.terminationStatus == 0 && !d.isEmpty ? d : nil)
-                } catch {
-                    cont.resume(returning: nil)
-                }
+        playbackObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { _, _ in
+            Task { @MainActor in
+                guard loadID == generation, self.player === player else { return }
+                isPlaying = player.timeControlStatus != .paused
             }
         }
-    }
-
-    private func startDownload() {
-        clampTrimSelection()
-        guard selectionIsValid else { return }
-        DownloadManager.shared.enqueue(
-            url: url,
-            mode: asAudio ? .audio : .cut,
-            cutStart: Self.cleanSeconds(startSeconds, fallback: 0),
-            cutEnd: Self.cleanSeconds(endSeconds, fallback: trimDuration)
-        )
-    }
-
-    private func formatTime(_ t: Double) -> String {
-        let total = Int(Self.cleanSeconds(t, fallback: 0))
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%d:%02d", m, s)
-    }
-
-    private func clampTrimSelection() {
-        let limit = trimDuration
-        guard limit > 0 else {
-            if startSeconds != 0 { startSeconds = 0 }
-            if endSeconds != 0 { endSeconds = 0 }
-            return
-        }
-        let minGap = min(0.25, limit)
-        var start = min(max(Self.cleanSeconds(startSeconds, fallback: 0), 0), limit)
-        var end = min(max(Self.cleanSeconds(endSeconds, fallback: min(60, limit)), 0), limit)
-        if end - start < minGap {
-            if start + minGap <= limit {
-                end = start + minGap
-            } else {
-                start = max(0, end - minGap)
+        playbackEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: player.currentItem, queue: .main) { _ in
+            Task { @MainActor in
+                guard loadID == generation, self.player === player else { return }
+                if loopSelection { restartSelection(player, generation: generation) }
+                else { isPlaying = false }
             }
         }
-        if abs(start - startSeconds) > 0.001 { startSeconds = start }
-        if abs(end - endSeconds) > 0.001 { endSeconds = end }
-    }
-
-    private static func seconds(from value: Any?) -> Double {
-        switch value {
-        case let double as Double:
-            return cleanSeconds(double, fallback: 0)
-        case let int as Int:
-            return cleanSeconds(Double(int), fallback: 0)
-        case let number as NSNumber:
-            return cleanSeconds(number.doubleValue, fallback: 0)
-        default:
-            return 0
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.05, preferredTimescale: 600), queue: .main) { time in
+            currentTime = max(0, time.seconds.isFinite ? time.seconds : 0)
+            isPlaying = player.rate > 0
+            if loopSelection && player.rate > 0 && currentTime >= endSeconds { restartSelection(player, generation: generation) }
         }
     }
-
-    private static func cleanSeconds(_ value: Double, fallback: Double) -> Double {
-        value.isFinite && value >= 0 ? value : fallback
+    private func restartSelection(_ playback: AVPlayer, generation: UUID) {
+        guard !restartingLoop else { return }
+        restartingLoop = true
+        Task { @MainActor in
+            await playback.seek(to: CMTime(seconds: startSeconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            guard loadID == generation, player === playback else { return }
+            restartingLoop = false
+            playback.play()
+        }
+    }
+    private func loadSource() async {
+        teardownPlayer()
+        loadID = UUID(); let generation = loadID
+        loading = true; defer { if loadID == generation { loading = false } }
+        loadError = nil; previewError = nil; cookieWarning = nil; previewURL = nil; thumbnailURL = nil
+        duration = 0; startSeconds = 0; endSeconds = 0; frameStep = 0.1; zoom = 1; timelineCenter = nil
+        rangeHistory = []; redoHistory = []; job = nil; startInputInvalid = false; endInputInvalid = false
+        switch source {
+        case .local(let file):
+            title = file.deletingPathExtension().lastPathComponent; link = ""
+            asAudio = LibraryScan.mode(for: file) == .audio
+            guard FileManager.default.fileExists(atPath: file.path) else { loadError = "The source file is unavailable."; return }
+            let asset = AVURLAsset(url: file)
+            let localDuration = (try? await asset.load(.duration).seconds) ?? 0
+            guard !Task.isCancelled else { return }
+            duration = localDuration
+            if !duration.isFinite || duration <= 0 {
+                let result = await run(dependencies.binDirectory.appendingPathComponent("ffprobe"), ["-v", "error", "-show_format", "-of", "json", file.path])
+                if let data = result?.data(using: .utf8), let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let format = info["format"] as? [String: Any], let value = format["duration"] as? String { duration = Double(value) ?? 0 }
+            }
+            guard !Task.isCancelled else { return }
+            previewURL = file
+        case .online(let url):
+            guard !url.isEmpty else { loading = false; return }
+            link = url; title = "Loading media…"
+            let cookies = await CookieArgs.resolve(for: url)
+            defer { cookies.cleanup() }
+            cookieWarning = cookies.error
+            let common = ["--no-playlist", "--no-warnings", "--js-runtimes", "deno", "--js-runtimes", "node"] + cookies.arguments
+            guard let response = await run(dependencies.ytDlpPath, common + ["--dump-single-json", "--skip-download", url]),
+                  let data = response.data(using: .utf8), let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any], !Task.isCancelled else {
+                if !Task.isCancelled { loadError = "Could not load media. Check the link or browser sign-in, then load again." }
+                return
+            }
+            title = info["title"] as? String ?? url; uploader = info["uploader"] as? String ?? ""
+            duration = (info["duration"] as? NSNumber)?.doubleValue ?? 0
+            thumbnailURL = (info["thumbnail"] as? String).flatMap(URL.init(string:))
+            if let response = await run(dependencies.ytDlpPath, common + ["-g", "-f", "b[ext=mp4][protocol^=https][vcodec!=none][acodec!=none]/b", url]),
+               let first = response.split(separator: "\n").first { previewURL = URL(string: String(first)) }
+            else { previewError = "Preview unavailable. You can still export a valid selection." }
+        }
+        guard !Task.isCancelled else { return }
+        guard duration.isFinite, duration > 0 else { duration = 0; loadError = "This source has no usable duration for trimming."; return }
+        startSeconds = 0; endSeconds = min(60, duration); timelineCenter = duration / 2; rangeHistory = [selection]
+        if let previewURL { await configurePlayer(previewURL) }
+    }
+    private func run(_ executable: URL, _ arguments: [String]) async -> String? {
+        let process = Process(); process.executableURL = executable; process.arguments = arguments
+        process.environment = DependencyManager.enhancedEnvironment; loadProcess = process
+        let result = await MediaProcess.run(process)
+        if loadProcess === process { loadProcess = nil }
+        guard !Task.isCancelled, result.code == 0 else { return nil }
+        return result.stdout
+    }
+    private func export() {
+        guard selectionIsValid, !busy else { return }
+        player?.pause(); isPlaying = false
+        job = downloads.enqueue(url: source.value, mode: asAudio ? .audio : .cut,
+                                cutStart: startSeconds, cutEnd: endSeconds,
+                                overrides: DownloadOverrides(videoQuality: videoQuality, videoContainer: videoContainer, audioFormat: audioFormat),
+                                source: source, clipAccuracy: accuracy)
     }
 }
 
-// MARK: - Safe trim range
-
-struct SafeTrimRangeView: View {
-    @Binding var start: Double
-    @Binding var end: Double
-    let duration: Double
-    let currentTime: Double
-    let onScrub: (Double) -> Void
-
-    @State private var dragAnchor: (start: Double, end: Double, x: CGFloat)?
-
-    private let minSelection: Double = 0.25
-    private let handleWidth: CGFloat = 18
-    private var safeDuration: Double {
-        duration.isFinite && duration > 0 ? duration : 0
+private final class TrimPlayerLayer: NSView {
+    let video = AVPlayerLayer()
+    override init(frame: NSRect) {
+        super.init(frame: frame); wantsLayer = true
+        video.videoGravity = .resizeAspect; layer?.addSublayer(video)
     }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layout() { super.layout(); video.frame = bounds }
+}
+private struct TrimPlaybackSurface: NSViewRepresentable {
+    let player: AVPlayer
+    func makeNSView(context: Context) -> TrimPlayerLayer { TrimPlayerLayer() }
+    func updateNSView(_ view: TrimPlayerLayer, context: Context) { view.video.player = player }
+    static func dismantleNSView(_ view: TrimPlayerLayer, coordinator: ()) { view.video.player = nil }
+}
 
-    var body: some View {
-        GeometryReader { geo in
-            let width = max(geo.size.width.isFinite ? geo.size.width : 1, 1)
-            let height = geo.size.height.isFinite ? geo.size.height : 88
-            let trackHeight: CGFloat = 18
-            let trackY = (height - trackHeight) / 2
-            let startX = xPosition(for: start, width: width)
-            let endX = xPosition(for: end, width: width)
-            let playheadX = xPosition(for: currentTime, width: width)
+nonisolated struct TrimSelection: Equatable { let start: Double; let end: Double }
 
-            ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                    .fill(H3.cardFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: H3.radius2, style: .continuous)
-                            .stroke(H3.cardStroke, lineWidth: 1)
-                    )
-
-                ForEach(0..<7, id: \.self) { index in
-                    let x = width * CGFloat(index) / 6.0
-                    Rectangle()
-                        .fill(H3.ink300.opacity(0.28))
-                        .frame(width: 1, height: index == 0 || index == 6 ? 30 : 20)
-                        .offset(x: x, y: (height - (index == 0 || index == 6 ? 30 : 20)) / 2)
-                }
-
-                Capsule()
-                    .fill(H3.ink100)
-                    .frame(height: trackHeight)
-                    .padding(.horizontal, handleWidth / 2)
-                    .offset(y: trackY)
-
-                Capsule()
-                    .fill(H3.gradDeep)
-                    .frame(width: max(endX - startX, 0), height: trackHeight)
-                    .offset(x: startX, y: trackY)
-                    .shadow(color: H3.blue400.opacity(0.22), radius: 5, y: 2)
-                    .gesture(selectionDrag(width: width))
-
-                if currentTime.isFinite, currentTime >= 0, currentTime <= safeDuration {
-                    VStack(spacing: 4) {
-                        Text(formatTime(currentTime))
-                            .font(H3.mono(size: 10, weight: .semibold))
-                            .foregroundStyle(H3.ink900)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(H3.cardFill))
-                            .overlay(Capsule().stroke(H3.cardStroke, lineWidth: 1))
-                        Rectangle()
-                            .fill(Color.white)
-                            .frame(width: 2, height: 44)
-                            .shadow(color: .black.opacity(0.28), radius: 2)
-                    }
-                    .offset(x: playheadX - 24, y: 6)
-                    .allowsHitTesting(false)
-                }
-
-                trimHandle(systemName: "chevron.left")
-                    .offset(x: startX - handleWidth / 2, y: (height - 50) / 2)
-                    .gesture(handleDrag(isStart: true, width: width))
-
-                trimHandle(systemName: "chevron.right")
-                    .offset(x: endX - handleWidth / 2, y: (height - 50) / 2)
-                    .gesture(handleDrag(isStart: false, width: width))
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { location in
-                onScrub(seconds(for: location.x, width: width))
-            }
-            .animation(H3.appleSnap, value: start)
-            .animation(H3.appleSnap, value: end)
+private struct TrimKeyboardMonitor: NSViewRepresentable {
+    let action: (String, NSEvent.ModifierFlags) -> Bool
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak view] event in
+            guard let window = view?.window, event.window === window,
+                  !(window.firstResponder is NSTextView) else { return event }
+            let key = event.keyCode == 123 ? "left" : event.keyCode == 124 ? "right" : event.charactersIgnoringModifiers ?? ""
+            return action(key, event.modifierFlags) ? nil : event
         }
+        return view
     }
-
-    private func trimHandle(systemName: String) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(H3.cardFill)
-                .frame(width: handleWidth, height: 50)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(H3.blue400.opacity(0.55), lineWidth: 1.5)
-                )
-                .shadow(color: H3.shadowDrop.opacity(0.18), radius: 6, y: 3)
-            Image(systemName: systemName)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(H3.blue400)
-        }
-        .contentShape(Rectangle())
+    func updateNSView(_ view: NSView, context: Context) {}
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
     }
-
-    private func handleDrag(isStart: Bool, width: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                let target = seconds(for: value.location.x, width: width)
-                let gap = min(minSelection, max(safeDuration, 0))
-                if isStart {
-                    start = min(max(target, 0), max(end - gap, 0))
-                    onScrub(start)
-                } else {
-                    end = max(min(target, safeDuration), min(start + gap, safeDuration))
-                    onScrub(end)
-                }
-            }
-    }
-
-    private func selectionDrag(width: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 2)
-            .onChanged { value in
-                if dragAnchor == nil {
-                    dragAnchor = (start, end, value.startLocation.x)
-                }
-                guard let anchor = dragAnchor else { return }
-                let delta = seconds(for: value.location.x, width: width)
-                    - seconds(for: anchor.x, width: width)
-                let length = max(anchor.end - anchor.start, minSelection)
-                let newStart = min(max(anchor.start + delta, 0), max(safeDuration - length, 0))
-                start = newStart
-                end = newStart + length
-            }
-            .onEnded { _ in dragAnchor = nil }
-    }
-
-    private func xPosition(for seconds: Double, width: CGFloat) -> CGFloat {
-        guard safeDuration > 0, seconds.isFinite, width.isFinite else { return 0 }
-        let clamped = min(max(seconds, 0), safeDuration)
-        let usableWidth = max(width - handleWidth, 1)
-        return handleWidth / 2 + usableWidth * CGFloat(clamped / safeDuration)
-    }
-
-    private func seconds(for x: CGFloat, width: CGFloat) -> Double {
-        guard safeDuration > 0, x.isFinite, width.isFinite else { return 0 }
-        let usableWidth = max(width - handleWidth, 1)
-        let adjustedX = min(max(x - handleWidth / 2, 0), usableWidth)
-        let pct = Double(adjustedX / usableWidth)
-        return pct * safeDuration
-    }
-
-    private func formatTime(_ t: Double) -> String {
-        let total = Int(t.isFinite && t >= 0 ? t : 0)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%d:%02d", m, s)
-    }
+    final class Coordinator { var monitor: Any? }
 }
 
 // MARK: - iOS Photos-style filmstrip trim
 
-/// Thumbnail cache keyed by preview URL → array of (time, image).
-@MainActor
-final class FilmstripCache {
+struct TimedThumbnail {
+    let time: Double
+    let image: NSImage?
+}
+@MainActor final class FilmstripCache {
     static let shared = FilmstripCache()
-    private let maxEntries = 2
-    private var cache: [URL: [NSImage]] = [:]
-    private var order: [URL] = []
-
-    func get(_ u: URL) -> [NSImage]? {
-        guard let images = cache[u] else { return nil }
-        order.removeAll { $0 == u }
-        order.append(u)
-        return images
-    }
-
-    func set(_ u: URL, _ imgs: [NSImage]) {
-        cache[u] = imgs
-        order.removeAll { $0 == u }
-        order.append(u)
-        while order.count > maxEntries, let evicted = order.first {
-            order.removeFirst()
-            cache.removeValue(forKey: evicted)
-        }
+    private var cache: [String: [TimedThumbnail]] = [:]
+    private var order: [String] = []
+    func get(_ key: String) -> [TimedThumbnail]? { cache[key] }
+    func set(_ key: String, _ images: [TimedThumbnail]) {
+        cache[key] = images
+        order.removeAll { $0 == key }; order.append(key)
+        while order.count > 8 { cache.removeValue(forKey: order.removeFirst()) }
     }
 }
 
@@ -751,22 +445,25 @@ struct FilmstripTrimView: View {
     @Binding var start: Double
     @Binding var end: Double
     @Binding var zoom: Double
+    @Binding var center: Double?
     let duration: Double
     let currentTime: Double
     let previewURL: URL?
     let onScrub: (Double) -> Void
+    let onScrubEnd: (Double) -> Void
 
-    @State private var thumbnails: [NSImage] = []
+    @State private var thumbnails: [TimedThumbnail] = []
+    @State private var timelineSpace = UUID()
     @State private var loadingThumbs = false
     @State private var dragAnchor: (startS: Double, endS: Double, startX: CGFloat)?
     @State private var pinchBase: Double?
 
     private let handleW: CGFloat = 18
     private let handleOverhang: CGFloat = 8   // how far handles extend above/below the strip
-    private let minSelection: Double = 0.1
+    private var minSelection: Double { min(0.25, safeDuration) }
 
     private var safeDuration: Double {
-        duration.isFinite && duration > 0 ? duration : minSelection
+        duration.isFinite && duration > 0 ? duration : 0.25
     }
 
     private var safeZoom: Double {
@@ -776,7 +473,7 @@ struct FilmstripTrimView: View {
     // Windowed view around selection midpoint when zoomed.
     private var windowDuration: Double { max(safeDuration / safeZoom, minSelection) }
     private var windowStart: Double {
-        let mid = (start + end) / 2
+        let mid = center ?? (start + end) / 2
         let half = windowDuration / 2
         let clampedMid = min(max(mid.isFinite ? mid : half, half), max(safeDuration - half, half))
         return max(0, clampedMid - half)
@@ -794,17 +491,13 @@ struct FilmstripTrimView: View {
                         // (shift-scroll pans the selection). Vertical → zoom.
                         let horizontal = abs(dx) > abs(dy)
                         if horizontal && modifiers.contains(.shift) {
-                            let panFraction = Double(dx) / Double(max(w, 1))
-                            let deltaSec = panFraction * windowDuration
-                            let length = max(end - start, minSelection)
-                            let newStart = max(0, min(start + deltaSec, safeDuration - length))
-                            start = newStart
-                            end = newStart + length
+                            let delta = Double(dx) / Double(max(w, 1)) * windowDuration
+                            center = min(max((center ?? (start + end) / 2) + delta, windowDuration / 2), safeDuration - windowDuration / 2)
                         } else if horizontal {
                             let frac = Double(dx) / Double(max(w, 1))
                             let delta = frac * windowDuration
                             let t = min(max(currentTime + delta, 0), safeDuration)
-                            onScrub(t)
+                            onScrubEnd(t)
                         } else {
                             let factor = pow(1.10, Double(dy) / 6.0)
                             zoom = min(max(zoom * factor, 1), 50)
@@ -812,12 +505,12 @@ struct FilmstripTrimView: View {
                     },
                     onMiddleClick: { x in
                         let sec = windowStart + Double(x / max(w, 1)) * windowDuration
-                        onScrub(sec)
+                        onScrubEnd(sec)
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                filmstrip(width: w)
+                filmstrip(width: w, height: h)
                     .clipShape(RoundedRectangle(cornerRadius: H3.radius2, style: .continuous))
                     .allowsHitTesting(false)
 
@@ -911,7 +604,7 @@ struct FilmstripTrimView: View {
             .contentShape(Rectangle())
             .onTapGesture { loc in
                 let pct = Double(loc.x / max(w, 1))
-                onScrub(windowStart + pct * windowDuration)
+                onScrubEnd(windowStart + pct * windowDuration)
             }
             .gesture(
                 MagnificationGesture()
@@ -923,7 +616,8 @@ struct FilmstripTrimView: View {
                     .onEnded { _ in pinchBase = nil }
             )
         }
-        .task(id: previewURL) { await loadThumbnails() }
+        .coordinateSpace(name: timelineSpace)
+        .task(id: "\(previewURL?.absoluteString ?? "")|\(windowStart)|\(windowDuration)") { await loadThumbnails() }
     }
 
     // MARK: - h3 timeline overlays
@@ -984,7 +678,7 @@ struct FilmstripTrimView: View {
                 .foregroundStyle(H3.ink900)
                 .padding(.horizontal, 7).padding(.vertical, 3)
                 .background(
-                    Capsule().fill(Color.white)
+                    Capsule().fill(H3.cardFill)
                 )
                 .overlay(Capsule().stroke(H3.cardStroke, lineWidth: 1))
                 .shadow(color: H3.shadowDrop.opacity(0.4), radius: 3, y: 2)
@@ -999,29 +693,29 @@ struct FilmstripTrimView: View {
         return String(format: "%d:%02d", m, s)
     }
 
-    private func filmstrip(width w: CGFloat) -> some View {
+    private func filmstrip(width w: CGFloat, height h: CGFloat) -> some View {
         let slots = max(Int((w / 48).rounded()), 6)
         return HStack(spacing: 0) {
             if thumbnails.isEmpty {
                 ForEach(0..<slots, id: \.self) { _ in
                     Rectangle().fill(Color.secondary.opacity(0.25))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(width: w / CGFloat(slots), height: h)
                         .overlay(Rectangle().stroke(.black.opacity(0.15), lineWidth: 0.5))
                 }
             } else {
-                let count = thumbnails.count
                 ForEach(0..<slots, id: \.self) { i in
                     // Map this slot's time into the full thumbnail range
                     let t = windowStart + (Double(i) + 0.5) / Double(slots) * windowDuration
-                    let idx = min(max(Int((t / max(safeDuration, 0.001)) * Double(count)), 0), count - 1)
-                    Image(nsImage: thumbnails[idx])
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
+                    let nearest = thumbnails.min { abs($0.time - t) < abs($1.time - t) }
+                    if let image = nearest?.image {
+                        Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: w / CGFloat(slots), height: h).clipped()
+                    } else {
+                        Rectangle().fill(H3.ink100).frame(width: w / CGFloat(slots), height: h)
+                    }
                 }
             }
-        }
+        }.frame(width: w, height: h)
     }
 
     /// Glossy h3 grab handle: brand-blue gradient pill with white gloss
@@ -1074,15 +768,20 @@ struct FilmstripTrimView: View {
     // MARK: Gestures
 
     private func handleDrag(isStart: Bool, width w: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0).onChanged { v in
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(timelineSpace)).onChanged { v in
             let sec = secondsFor(v.location.x, w)
+            if safeZoom > 1 {
+                let delta = v.location.x < 12 ? -windowDuration * 0.02 : v.location.x > w - 12 ? windowDuration * 0.02 : 0
+                if delta != 0 { center = min(max((center ?? (start + end) / 2) + delta, windowDuration / 2), safeDuration - windowDuration / 2) }
+            }
             if isStart { start = min(max(sec, 0), end - minSelection) }
             else       { end   = min(max(sec, start + minSelection), safeDuration) }
-        }
+            onScrub(isStart ? start : end)
+        }.onEnded { _ in onScrubEnd(isStart ? start : end) }
     }
 
     private func selectionDrag(width w: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(timelineSpace))
             .onChanged { v in
                 if dragAnchor == nil {
                     dragAnchor = (start, end, v.startLocation.x)
@@ -1103,46 +802,26 @@ struct FilmstripTrimView: View {
 
     @MainActor
     private func loadThumbnails() async {
-        guard let u = previewURL, safeDuration > 0 else { return }
-        if let cached = FilmstripCache.shared.get(u) {
-            thumbnails = cached
-            return
-        }
-        guard !loadingThumbs else { return }
-        loadingThumbs = true
-        defer { loadingThumbs = false }
-
-        let totalDuration = safeDuration
-        let images: [NSImage] = await Task.detached(priority: .utility) {
-            let asset = AVURLAsset(url: u)
-            let gen = AVAssetImageGenerator(asset: asset)
-            gen.appliesPreferredTrackTransform = true
-            gen.maximumSize = CGSize(width: 160, height: 90)
-            gen.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
-            gen.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
-
-            let steps = 36
-            var out: [NSImage] = []
-            out.reserveCapacity(steps)
-            for i in 0..<steps {
-                if Task.isCancelled { return [] }
-                let seconds = totalDuration * Double(i) / Double(max(steps - 1, 1))
-                let time = CMTime(seconds: seconds, preferredTimescale: 600)
-                let cg = await withCheckedContinuation { continuation in
-                    gen.generateCGImageAsynchronously(for: time) { image, _, _ in
-                        continuation.resume(returning: image)
-                    }
-                }
-                guard let cg else { continue }
-                out.append(NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)))
-            }
-            return out
-        }.value
-
-        guard !Task.isCancelled else { return }
-        guard !images.isEmpty else { return }
-        FilmstripCache.shared.set(u, images)
+        guard let url = previewURL, safeDuration > 0 else { thumbnails = []; return }
+        let lower = windowStart, span = windowDuration
+        let key = "\(url.absoluteString)|\(lower)|\(span)"
+        if let cached = FilmstripCache.shared.get(key) { thumbnails = cached; return }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 160, height: 90)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
+        let times = (0..<24).map { lower + span * (Double($0) + 0.5) / 24 }
+        var images: [TimedThumbnail] = times.map { TimedThumbnail(time: $0, image: nil) }
         thumbnails = images
+        for index in times.indices.sorted(by: { abs(times[$0] - currentTime) < abs(times[$1] - currentTime) }) {
+            guard !Task.isCancelled else { generator.cancelAllCGImageGeneration(); return }
+            let result = try? await generator.image(at: CMTime(seconds: times[index], preferredTimescale: 600))
+            guard !Task.isCancelled else { generator.cancelAllCGImageGeneration(); return }
+            images[index] = TimedThumbnail(time: times[index], image: result.map { NSImage(cgImage: $0.image, size: .zero) })
+            thumbnails = images
+        }
+        FilmstripCache.shared.set(key, images)
     }
 }
 
@@ -1202,66 +881,36 @@ private final class _ScrollCatcherView: NSView {
 struct TimeField: View {
     let label: String
     @Binding var seconds: Double
+    let min: Double
     let max: Double
-
-    @State private var text: String = "0:00"
-
+    @Binding var invalid: Bool
+    @State private var text = "00:00:00.000"
+    @State private var error: String?
+    @FocusState private var focused: Bool
     var body: some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(H3.body(size: 11, weight: .semibold))
-                .foregroundStyle(H3.ink500)
-            TextField("", text: $text, onCommit: commit)
-                .textFieldStyle(.plain)
-                .font(H3.mono(size: 12, weight: .semibold))
-                .foregroundStyle(H3.ink900)
-                .multilineTextAlignment(.center)
-                .frame(width: 80)
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
-                        .fill(H3.cardFill)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: H3.radius1, style: .continuous)
-                        .stroke(H3.cardStroke, lineWidth: 1)
-                )
-                .onAppear { text = format(seconds) }
-                .onChange(of: seconds) { _, new in text = format(new) }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(label).font(H3.body(size: 11, weight: .semibold)).foregroundStyle(H3.ink500)
+                TextField("00:00:00.000", text: $text).textFieldStyle(.roundedBorder)
+                    .font(H3.mono(size: 12)).frame(width: 126).focused($focused)
+                    .onSubmit(commit)
+                    .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
+                    .onChange(of: text) { _, value in
+                        if focused {
+                            invalid = MediaTime.parse(value).map { $0 < min || $0 > max } ?? true
+                            error = invalid ? "Enter a time from \(MediaTime.format(min)) to \(MediaTime.format(max))." : nil
+                        }
+                    }
+                    .onChange(of: seconds) { _, value in if !focused { text = MediaTime.format(value) } }
+                    .onAppear { text = MediaTime.format(seconds) }
+            }
+            if let error { Text(error).font(.caption2).foregroundStyle(H3.red) }
         }
     }
-
     private func commit() {
-        if let parsed = parse(text) {
-            let limit = max.isFinite && max > 0 ? max : 0
-            seconds = min(Swift.max(parsed.isFinite ? parsed : 0, 0), limit)
+        guard let parsed = MediaTime.parse(text), parsed >= min, parsed <= max else {
+            error = "Enter a time from \(MediaTime.format(min)) to \(MediaTime.format(max))."; invalid = true; return
         }
-        text = format(seconds)
-    }
-
-    private func parse(_ s: String) -> Double? {
-        let parts = s.split(separator: ":").map { String($0) }
-        switch parts.count {
-        case 1:
-            return Double(parts[0])
-        case 2:
-            guard let m = Double(parts[0]), let sec = Double(parts[1]) else { return nil }
-            return m * 60 + sec
-        case 3:
-            guard let h = Double(parts[0]), let m = Double(parts[1]), let sec = Double(parts[2])
-            else { return nil }
-            return h * 3600 + m * 60 + sec
-        default: return nil
-        }
-    }
-
-    private func format(_ t: Double) -> String {
-        let clean = t.isFinite && t >= 0 ? t : 0
-        let total = Int(clean)
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        let frac = Int((clean - Double(total)) * 1000)
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        if frac > 0 { return String(format: "%d:%02d.%03d", m, s, frac) }
-        return String(format: "%d:%02d", m, s)
+        seconds = parsed; text = MediaTime.format(seconds); error = nil; invalid = false
     }
 }

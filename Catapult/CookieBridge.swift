@@ -1,6 +1,7 @@
 import Foundation
 import CommonCrypto
 import SQLite3
+import CryptoKit
 
 // Helium (imput's privacy-focused Chromium fork) isn't in yt-dlp's
 // `--cookies-from-browser` list, so passing that name upstream fails with
@@ -13,24 +14,28 @@ import SQLite3
 /// Shared cookie-flag resolution for every yt-dlp invocation. Native
 /// browsers map straight to `--cookies-from-browser`; Helium goes through
 /// the exported Netscape file.
+struct CookieImport {
+    let arguments: [String]
+    let profile: String?
+    let error: String?
+    let temporaryFile: URL?
+    func cleanup() { if let temporaryFile { try? FileManager.default.removeItem(at: temporaryFile) } }
+}
+
 enum CookieArgs {
-    static func flags(for url: String, source: CookieSource? = nil) async -> [String] {
-        let resolved: CookieSource = await MainActor.run {
-            source ?? AppSettings.shared.cookieSource(for: url)
-        }
-        switch resolved {
-        case .off:
-            return []
-        case .helium:
-            let file = await Task.detached(priority: .userInitiated) {
-                HeliumCookieBridge.exportCookieFile()
+    static func resolve(for url: String, source: CookieSource? = nil, refresh: Bool = false) async -> CookieImport {
+        let resolved = source ?? AppSettings.shared.cookieSource(for: url)
+        if resolved == .off { return CookieImport(arguments: [], profile: nil, error: nil, temporaryFile: nil) }
+        if resolved == .helium {
+            let profile = AppSettings.shared.heliumProfile
+            let result = await Task.detached(priority: .userInitiated) {
+                HeliumCookieBridge.operationExport(profile: profile, maxAge: refresh ? 0 : 30)
             }.value
-            guard let file else { return [] }
-            return ["--cookies", file.path]
-        default:
-            guard let name = resolved.ytdlpName else { return [] }
-            return ["--cookies-from-browser", name]
+            return CookieImport(arguments: result.file.map { ["--cookies", $0.path] } ?? [],
+                                profile: result.profile, error: result.error, temporaryFile: result.file)
         }
+        return CookieImport(arguments: ["--cookies-from-browser", resolved.ytdlpName!],
+                            profile: resolved.label, error: nil, temporaryFile: nil)
     }
 }
 
@@ -58,16 +63,98 @@ nonisolated enum HeliumCookieBridge {
         ("~/Library/Application Support/Helium" as NSString).expandingTildeInPath,
     ]
 
-    struct CacheEntry { let dbMtime: Date; let file: URL; let at: Date }
+    struct CacheEntry { let dbMtime: Date; let database: URL; let fingerprint: String; let file: URL; let at: Date }
+    private static let exportLock = NSLock()
+    struct Profile: Identifiable, Sendable {
+        let id: String
+        let label: String
+        let database: URL
+    }
+    struct ExportResult: Sendable { let file: URL?; let profile: String?; let error: String? }
+    static func profiles(roots: [String]? = nil) -> [Profile] {
+        let fm = FileManager.default
+        var result: [Profile] = []
+        for root in roots ?? dataDirCandidates {
+            let rootURL = URL(fileURLWithPath: root)
+            guard let children = try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil) else { continue }
+            let state = (try? Data(contentsOf: rootURL.appendingPathComponent("Local State")))
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let info = (state?["profile"] as? [String: Any])?["info_cache"] as? [String: [String: Any]]
+            for child in children where child.lastPathComponent == "Default" || child.lastPathComponent.hasPrefix("Profile ") {
+                let candidates = [child.appendingPathComponent("Network/Cookies"), child.appendingPathComponent("Cookies")]
+                guard let database = candidates.first(where: { fm.fileExists(atPath: $0.path) }) else { continue }
+                result.append(Profile(id: child.path, label: info?[child.lastPathComponent]?["name"] as? String ?? child.lastPathComponent, database: database))
+            }
+        }
+        return result.sorted { $0.id < $1.id }
+    }
+    private static func selectedProfile(_ id: String) -> Profile? {
+        let available = profiles()
+        if !id.isEmpty { return available.first { $0.id == id } }
+        for root in dataDirCandidates {
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: root).appendingPathComponent("Local State")),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let name = (json["profile"] as? [String: Any])?["last_used"] as? String,
+                  let match = available.first(where: { $0.id == URL(fileURLWithPath: root).appendingPathComponent(name).path }) else { continue }
+            return match
+        }
+        return available.first
+    }
+    private static func fingerprint(_ database: URL) -> String {
+        [database.path, database.path + "-wal"].map { path in
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            return "\(path):\(attributes?[.modificationDate] ?? ""):\(attributes?[.size] ?? "")"
+        }.joined(separator: "|")
+    }
+    static func operationExport(profile: String, maxAge: TimeInterval) -> ExportResult {
+        exportLock.lock(); defer { exportLock.unlock() }
+        let selected = selectedProfile(profile)
+        guard let file = exportUnlocked(maxAge: maxAge, selected: selected) else {
+            return ExportResult(file: nil, profile: selected?.label, error: lastError)
+        }
+        let privateFile = file.deletingLastPathComponent().appendingPathComponent("operation-\(UUID().uuidString).txt")
+        do {
+            try FileManager.default.copyItem(at: file, to: privateFile)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: privateFile.path)
+            return ExportResult(file: privateFile, profile: selected?.label, error: nil)
+        } catch { return ExportResult(file: nil, profile: selected?.label, error: error.localizedDescription) }
+    }
+    /// SQLite backup includes committed WAL transactions without copying inconsistent sidecars.
+    static func snapshot(database: URL, to destination: URL) throws {
+        var source: OpaquePointer?, target: OpaquePointer?
+        guard sqlite3_open_v2(database.path, &source, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            if let source { sqlite3_close(source) }
+            throw CookieError.sqlite("Could not open the cookie database.")
+        }
+        defer { sqlite3_close(source) }
+        guard sqlite3_open(destination.path, &target) == SQLITE_OK else {
+            if let target { sqlite3_close(target) }
+            throw CookieError.sqlite("Could not create the cookie snapshot.")
+        }
+        defer { sqlite3_close(target) }
+        sqlite3_busy_timeout(source, 1500)
+        guard let backup = sqlite3_backup_init(target, "main", source, "main") else {
+            throw CookieError.sqlite("Could not start the cookie snapshot.")
+        }
+        var status: Int32 = SQLITE_OK
+        for _ in 0..<20 {
+            status = sqlite3_backup_step(backup, -1)
+            if status == SQLITE_DONE { break }
+            if status != SQLITE_BUSY && status != SQLITE_LOCKED { break }
+            sqlite3_sleep(50)
+        }
+        let finish = sqlite3_backup_finish(backup)
+        guard status == SQLITE_DONE && finish == SQLITE_OK else { throw CookieError.sqlite("Cookie database is busy. Try refreshing cookies.") }
+    }
     private static var cache: CacheEntry?
     private static let cacheLock = NSLock()
 
-    private static func cachedExport(maxAge: TimeInterval, dbMtime: Date) -> URL? {
+    private static func cachedExport(maxAge: TimeInterval, dbMtime: Date, database: URL) -> URL? {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         guard let cache,
               Date().timeIntervalSince(cache.at) < maxAge,
-              cache.dbMtime == dbMtime,
+              cache.dbMtime == dbMtime, cache.database == database, cache.fingerprint == fingerprint(database),
               FileManager.default.fileExists(atPath: cache.file.path) else { return nil }
         return cache.file
     }
@@ -94,13 +181,20 @@ nonisolated enum HeliumCookieBridge {
     /// reused for `maxAge` seconds so the info fetch and the download
     /// don't both pay for the same sqlite copy + keychain round-trip.
     static func exportCookieFile(maxAge: TimeInterval = 30) -> URL? {
+        exportLock.lock(); defer { exportLock.unlock() }
+        return exportUnlocked(maxAge: maxAge, selected: selectedProfile(""))
+    }
+    private static func exportUnlocked(maxAge: TimeInterval, selected: Profile?) -> URL? {
         lastError = nil
         let fm = FileManager.default
-        guard let (db, mtime) = newestCookieDatabase() else {
+        guard let selected else {
             lastError = "Helium's cookie database wasn't found — is Helium installed?"
             return nil
         }
-        if let file = cachedExport(maxAge: maxAge, dbMtime: mtime) {
+        let db = selected.database
+        let initialFingerprint = fingerprint(db)
+        let mtime = (try? db.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        if let file = cachedExport(maxAge: maxAge, dbMtime: mtime, database: db) {
             return file
         }
 
@@ -126,16 +220,7 @@ nonisolated enum HeliumCookieBridge {
 
         let dbCopy = tmp.appendingPathComponent("Cookies")
         do {
-            try fm.copyItem(at: db, to: dbCopy)
-            // Carry the WAL/SHM sidecars over so SQLite replays recent
-            // transactions instead of losing cookies from a live session.
-            for suffix in ["-wal", "-shm"] {
-                let sidecar = URL(fileURLWithPath: db.path + suffix)
-                if fm.fileExists(atPath: sidecar.path) {
-                    try? fm.copyItem(at: sidecar,
-                                     to: URL(fileURLWithPath: dbCopy.path + suffix))
-                }
-            }
+            try snapshot(database: db, to: dbCopy)
         } catch {
             lastError = "Couldn't copy Helium's cookie database: \(error.localizedDescription)"
             return nil
@@ -159,7 +244,7 @@ nonisolated enum HeliumCookieBridge {
             lastError = "Couldn't write the cookie file: \(error.localizedDescription)"
             return nil
         }
-        storeCache(CacheEntry(dbMtime: mtime, file: exportURL, at: Date()))
+        storeCache(CacheEntry(dbMtime: mtime, database: db, fingerprint: initialFingerprint, file: exportURL, at: Date()))
         return exportURL
     }
 
@@ -203,24 +288,6 @@ nonisolated enum HeliumCookieBridge {
     }
 
     // MARK: - Database discovery
-
-    private static func newestCookieDatabase() -> (URL, Date)? {
-        let fm = FileManager.default
-        var best: (URL, Date)?
-        for root in dataDirCandidates {
-            guard let en = fm.enumerator(
-                at: URL(fileURLWithPath: root),
-                includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey]
-            ) else { continue }
-            for case let url as URL in en where url.lastPathComponent == "Cookies" {
-                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-                let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
-                    .contentModificationDate) ?? .distantPast
-                if best == nil || mtime > best!.1 { best = (url, mtime) }
-            }
-        }
-        return best
-    }
 
     // MARK: - Keychain + crypto
 
@@ -278,26 +345,23 @@ nonisolated enum HeliumCookieBridge {
         return key
     }
 
-    /// Decrypts one Chromium cookie payload. Non-"v10" payloads are old
-    /// plaintext data; "v10" is AES-128-CBC whose plaintext optionally
-    /// carries a 32-byte SHA-256 hash prefix (cookie meta version ≥ 24).
-    /// The trim order isn't knowable per-build, so both are tried and the
-    /// first valid UTF-8 result wins.
-    private static func decryptValue(_ enc: Data, key: Data, hashPrefixFirst: Bool) -> Data? {
-        guard enc.count > 3 else { return nil }
-        guard String(data: enc.prefix(3), encoding: .utf8) == "v10" else {
-            return enc  // 'old data' — stored as plaintext on macOS
+    /// Chromium v24 binds each encrypted value to its host with a SHA-256 prefix.
+    static func decryptValue(_ encrypted: Data, key: Data, hashPrefixFirst: Bool, domain: String) -> Data? {
+        guard encrypted.count > 3 else { return nil }
+        let version = String(data: encrypted.prefix(3), encoding: .utf8)
+        guard version == "v10" else {
+            if version == "v11" || version == "v20" { return nil }
+            return encrypted
         }
-        guard let cipher = aesCBCDecrypt(Data(enc.dropFirst(3)), key: key) else { return nil }
-        guard let plain = pkcs7Unpad(cipher) else { return nil }
-        let candidates: [Data] = hashPrefixFirst
-            ? [Data(plain.dropFirst(hashPrefixLength)), Data(plain)]
-            : [Data(plain), Data(plain.dropFirst(hashPrefixLength))]
-        for candidate in candidates {
-            guard !candidate.isEmpty, String(data: candidate, encoding: .utf8) != nil else { continue }
-            return candidate
-        }
-        return nil
+        guard let cipher = aesCBCDecrypt(Data(encrypted.dropFirst(3)), key: key),
+              let plain = pkcs7Unpad(cipher) else { return nil }
+        let value: Data
+        if hashPrefixFirst {
+            let digest = Data(SHA256.hash(data: Data(domain.utf8)))
+            guard plain.count >= hashPrefixLength, plain.prefix(hashPrefixLength) == digest else { return nil }
+            value = Data(plain.dropFirst(hashPrefixLength))
+        } else { value = plain }
+        return String(data: value, encoding: .utf8) == nil ? nil : value
     }
 
     private static func aesCBCDecrypt(_ data: Data, key: Data) -> Data? {
@@ -437,7 +501,7 @@ nonisolated enum HeliumCookieBridge {
                 if let v = plainValue, !v.isEmpty {
                     value = v
                 } else if let enc = row[3].bytesValue, !enc.isEmpty {
-                    guard let dec = decryptValue(enc, key: key, hashPrefixFirst: hashPrefixFirst) else {
+                    guard let dec = decryptValue(enc, key: key, hashPrefixFirst: hashPrefixFirst, domain: domain) else {
                         continue
                     }
                     value = String(decoding: dec, as: UTF8.self)

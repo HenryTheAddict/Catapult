@@ -88,10 +88,10 @@ enum H3 {
     static let radiusBlob: CGFloat = 47
 
     // MARK: Motion
-    static let easeOut    = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.28)
-    static let easeBounce = Animation.interpolatingSpring(stiffness: 260, damping: 24)
-    static let appleSnap  = Animation.interpolatingSpring(stiffness: 360, damping: 32)
-    static let appleDrift = Animation.timingCurve(0.2, 0.9, 0.2, 1, duration: 0.42)
+    static var easeOut: Animation { MotionPreferences.shared.adapt(.timingCurve(0.16, 1, 0.3, 1, duration: 0.28)) }
+    static var easeBounce: Animation { MotionPreferences.shared.adapt(.interpolatingSpring(stiffness: 260, damping: 24)) }
+    static var appleSnap: Animation { MotionPreferences.shared.adapt(.spring(response: 0.32, dampingFraction: 0.86)) }
+    static var appleDrift: Animation { MotionPreferences.shared.adapt(.spring(response: 0.42, dampingFraction: 0.9)) }
 
     // MARK: Fonts — uses the bundled TTFs if present, otherwise sensible system fallbacks.
     static func display(size: CGFloat, weight: Font.Weight = .medium) -> Font {

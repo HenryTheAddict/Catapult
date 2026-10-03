@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(DependencyManager.self) private var dependencies
     @Environment(DownloadManager.self) private var downloads
+    @State private var navigation = GalleryNavigation.shared
     @State private var selectedTab: SettingsTab = .general
     @State private var tabRailPage = 0
 
@@ -28,6 +29,8 @@ struct SettingsView: View {
         .environment(settings)
         .environment(dependencies)
         .environment(downloads)
+        .onAppear { if navigation.requestID > 0 { selectedTab = .history } }
+        .onChange(of: navigation.requestID) { _, _ in selectedTab = .history }
     }
 
     private var settingsTabRail: some View {
@@ -174,7 +177,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "Terminal"
         case .advanced: return "Advanced"
         case .dependencies: return "Dependencies"
-        case .history: return "History"
+        case .history: return "Gallery"
         case .about: return "About"
         }
     }
@@ -191,7 +194,7 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         case .terminal: return "terminal"
         case .advanced: return "slider.horizontal.3"
         case .dependencies: return "shippingbox"
-        case .history: return "clock.arrow.circlepath"
+        case .history: return "square.grid.2x2"
         case .about: return "info.circle"
         }
     }
@@ -974,6 +977,18 @@ private struct QualitySettingsTab: View {
 // MARK: - Network
 
 private struct NetworkSettingsTab: View {
+    @State private var profiles: [HeliumCookieBridge.Profile] = []
+    @State private var cookieStatus: String?
+    @State private var checkingCookies = false
+    private func checkCookies(refresh: Bool) {
+        checkingCookies = true
+        Task {
+            let result = await CookieArgs.resolve(for: "https://www.youtube.com", source: .helium, refresh: refresh)
+            defer { result.cleanup() }
+            cookieStatus = result.error ?? "Cookies readable from \(result.profile ?? "Helium"). Site sign-in is checked during download."
+            checkingCookies = false
+        }
+    }
     @Environment(AppSettings.self) private var settings
 
     var body: some View {
@@ -992,13 +1007,26 @@ private struct NetworkSettingsTab: View {
                     .labelsHidden()
                     .frame(width: 220)
                 }
+                if s.cookieSource == .helium {
+                    SettingsDivider()
+                    Picker("Profile", selection: $s.heliumProfile) {
+                        Text("Automatic (last used)").tag("")
+                        ForEach(profiles) { profile in Text(profile.label).tag(profile.id) }
+                    }
+                    HStack {
+                        Button("Check cookies", systemImage: "checkmark.shield") { checkCookies(refresh: false) }
+                        Button("Refresh cookies", systemImage: "arrow.clockwise") { checkCookies(refresh: true) }
+                        if checkingCookies { ProgressView().controlSize(.small) }
+                    }.disabled(checkingCookies)
+                    if let cookieStatus { Text(cookieStatus).font(H3.body(size: 11)).foregroundStyle(H3.ink500) }
+                }
                 if s.cookieSource != .off {
                     SettingsDivider()
                     HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
+                        Image(systemName: "key")
                             .foregroundStyle(H3.blue400)
                             .font(.system(size: 12))
-                        Text("Active for \(s.siteCookies.count) site\(s.siteCookies.count == 1 ? "" : "s"). If downloads trip bot-checks, make sure you are signed in to \(s.cookieSource.label).")
+                        Text("Configured for \(s.siteCookies.count) site\(s.siteCookies.count == 1 ? "" : "s"). If downloads trip bot-checks, make sure you are signed in to \(s.cookieSource.label).")
                             .font(H3.body(size: 11))
                             .foregroundStyle(H3.ink500)
                     }
@@ -1068,6 +1096,8 @@ private struct NetworkSettingsTab: View {
                                   isOn: $s.autoUpdateYtDlpOnLaunch)
             }
         }
+        .task { profiles = await Task.detached { HeliumCookieBridge.profiles() }.value }
+        .onChange(of: settings.heliumProfile) { _, _ in cookieStatus = nil }
     }
 }
 
@@ -2297,6 +2327,10 @@ enum AppVersion {
 // MARK: - History tab
 
 private struct HistoryTab: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(DownloadManager.self) private var downloads
+    @State private var library = MediaLibrary.shared
+    @AppStorage("historyGallery") private var gallery = true
     @State private var history = HistoryStore.shared
     @State private var query: String = ""
     @State private var filter: Filter = .all
@@ -2315,7 +2349,7 @@ private struct HistoryTab: View {
     }
 
     private var filtered: [HistoryEntry] {
-        history.entries.filter { e in
+        library.combined(with: history.entries, excluding: downloads.items.filter(\.isActive).flatMap { Array($0.intermediateFiles) + [$0.outputFile].compactMap { $0 } }).filter { e in
             switch filter {
             case .all: break
             case .finished:  if e.outcome != .finished  { return false }
@@ -2331,10 +2365,14 @@ private struct HistoryTab: View {
     }
 
     var body: some View {
-        SettingsPage(title: "history",
-                     subtitle: "recent downloads, failures, and cancelled items stay here so you can retry, reveal, or copy the original link.") {
+        SettingsPage(title: "gallery",
+                     subtitle: "all media in your download folder, alongside recent downloads. hover to preview, open, or trim.") {
             GeneralSettingsCard(title: "Search") {
                 HStack(spacing: 10) {
+                    Picker("View", selection: $gallery) {
+                        Label("Gallery", systemImage: "square.grid.2x2").tag(true)
+                        Label("List", systemImage: "list.bullet").tag(false)
+                    }.pickerStyle(.segmented).frame(width: 110).help("Gallery or list")
                     Picker("", selection: $filter) {
                         ForEach(Filter.allCases) { f in
                             Text(f.label).tag(f)
@@ -2368,14 +2406,18 @@ private struct HistoryTab: View {
                 if filtered.isEmpty {
                     HStack(spacing: 10) {
                         SettingsGlyph(systemName: "tray")
-                        Text(history.entries.isEmpty
-                             ? "no downloads yet - go grab something."
+                        Text(history.entries.isEmpty && library.entries.isEmpty
+                             ? "your download folder has no media yet."
                              : "no results.")
                             .font(H3.body(size: 13))
                             .foregroundStyle(H3.ink500)
                         Spacer()
                     }
                     .padding(.vertical, 4)
+                } else if gallery {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 14)], alignment: .leading, spacing: 14) {
+                        ForEach(filtered) { entry in MediaGalleryCard(entry: entry) }
+                    }
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(filtered.enumerated()), id: \.element.id) { index, entry in
@@ -2404,6 +2446,12 @@ private struct HistoryTab: View {
                         }
                     }
                 }
+            }
+        }
+        .task(id: settings.downloadFolderPath) {
+            while !Task.isCancelled {
+                await library.refresh(folder: settings.downloadFolderURL)
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }
@@ -2469,15 +2517,7 @@ private struct HistoryRow: View {
                 }
             }
             Spacer(minLength: 4)
-            if entry.outputFile != nil, entry.fileExists {
-                Button {
-                    HistoryStore.shared.reveal(entry)
-                } label: {
-                    Image(systemName: "folder")
-                }
-                .buttonStyle(.borderless)
-                .help("Reveal in Finder")
-            }
+            if let file = entry.outputFile { MediaFileActions(file: file, mode: entry.mode) }
         }
         .padding(.vertical, 4)
     }

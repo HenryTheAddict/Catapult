@@ -295,12 +295,23 @@ final class DownloadItem: Identifiable, Hashable {
     var resolvedDownloadURL: String?
 
     var status: DownloadStatus = .queued
+    var source: MediaSource?
+    var clipAccuracy: ClipAccuracy = .accurate
+    var attemptID = UUID()
+    var transfer = TransferProgress()
+    var intermediateFiles: Set<URL> = []
+    var hasMeasuredProgress = false
+    var progressEstimated = false
+    var cookieWarning: String?
     var progress: Double = 0          // 0..1 from yt-dlp
     var speed: String = ""
     var eta: String = ""
     var statusLine: String = "Queued"
     var outputFile: URL?
 
+    var isActive: Bool {
+        switch status { case .queued, .fetchingInfo, .downloading, .postProcessing: return true; default: return false }
+    }
     // Cut parameters (seconds)
     var cutStart: Double?
     var cutEnd: Double?
@@ -327,6 +338,7 @@ final class DownloadItem: Identifiable, Hashable {
     var dependencyRepairAttempted: Bool = false
 
     fileprivate var process: Process?
+    fileprivate var operationTask: Task<Void, Never>?
 
     init(url: String, mode: DownloadMode) {
         self.url = url
@@ -361,18 +373,21 @@ final class DownloadManager {
                  cutStart: Double? = nil,
                  cutEnd: Double? = nil,
                  overrides: DownloadOverrides = DownloadOverrides(),
-                 copyFileAfterFinish: Bool = false) -> DownloadItem {
+                 copyFileAfterFinish: Bool = false,
+                 source: MediaSource? = nil,
+                 clipAccuracy: ClipAccuracy = .accurate) -> DownloadItem {
         let item = DownloadItem(url: url, mode: mode)
+        item.source = source
+        item.clipAccuracy = clipAccuracy
         item.cutStart = cutStart
         item.cutEnd = cutEnd
         item.overrides = overrides
         item.copyFileAfterFinish = copyFileAfterFinish
         items.insert(item, at: 0)
         if SpotifyBridge.canBridge(url) {
-            Task { await bridgeSpotify(item) }
+            item.operationTask = Task { await bridgeSpotify(item) }
         } else {
             pendingIDs.append(item.id)
-            Task { await fetchInfo(for: item) }
             drain()
         }
         return item
@@ -380,7 +395,9 @@ final class DownloadManager {
 
     @MainActor
     func cancel(_ item: DownloadItem) {
-        item.process?.terminate()
+        item.attemptID = UUID()
+        item.operationTask?.cancel(); item.operationTask = nil
+        if item.process?.isRunning == true { item.process?.terminate() }
         item.status = .cancelled
         item.statusLine = "Cancelled"
         HistoryStore.shared.record(item)
@@ -390,7 +407,7 @@ final class DownloadManager {
 
     @MainActor
     func remove(_ item: DownloadItem) {
-        if case .downloading = item.status { item.process?.terminate() }
+        if item.isActive { cancel(item) }
         items.removeAll { $0.id == item.id }
         pendingIDs.removeAll { $0 == item.id }
     }
@@ -407,6 +424,7 @@ final class DownloadManager {
 
     @MainActor
     func retry(_ item: DownloadItem) {
+        guard !item.isActive else { return }
         item.status = .queued
         item.statusLine = "Queued"
         item.progress = 0
@@ -433,9 +451,10 @@ final class DownloadManager {
         while activeCount < max, let nextID = pendingIDs.first {
             pendingIDs.removeFirst()
             guard let item = items.first(where: { $0.id == nextID }) else { continue }
-            if case .cancelled = item.status { continue }
+            guard case .queued = item.status else { continue }
             activeCount += 1
-            Task { await run(item) }
+            item.attemptID = UUID()
+            item.operationTask = Task { await run(item) }
         }
     }
 
@@ -447,7 +466,9 @@ final class DownloadManager {
         item.status = .fetchingInfo
         item.statusLine = "Resolving Spotify…"
 
+        let attempt = item.attemptID
         let result = await SpotifyBridge.resolve(item.url)
+        guard item.attemptID == attempt, item.isActive, items.contains(where: { $0.id == item.id }) else { return }
         switch result {
         case .single(let track):
             applySpotify(track, to: item)
@@ -506,72 +527,26 @@ final class DownloadManager {
         .audio
     }
 
-    // MARK: - Info (title, thumbnail, duration) via yt-dlp --dump-single-json
-
-    @MainActor
-    private func fetchInfo(for item: DownloadItem) async {
-        item.status = .fetchingInfo
-        item.statusLine = "Fetching info…"
-        let dep = DependencyManager.shared
-        guard FileManager.default.fileExists(atPath: dep.ytDlpPath.path) else { return }
-        var args = ["--dump-single-json", "--no-warnings",
-                    "--no-playlist", "--skip-download"]
-        args.append(contentsOf: [
-            "--js-runtimes", "deno",
-            "--js-runtimes", "node",
-            "--js-runtimes", "bun",
-            "--js-runtimes", "quickjs",
-        ])
-        if SupportedSite.match(url: item.ytdlpURL) == .youtube {
-            args.append(contentsOf: [
-                "--extractor-args", "youtube:player_client=default,ios,web_safari,web_embedded,-tv"
-            ])
-        }
-        args.append(contentsOf: await CookieArgs.flags(for: item.ytdlpURL))
-        args.append(item.ytdlpURL)
-
-        let result: Data? = await withCheckedContinuation { cont in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let t = Process()
-                t.executableURL = dep.ytDlpPath
-                t.arguments = args
-                t.environment = DependencyManager.enhancedEnvironment
-                let out = Pipe()
-                t.standardOutput = out
-                t.standardError = Pipe()
-                do {
-                    try t.run()
-                    let data = out.fileHandleForReading.readDataToEndOfFile()
-                    t.waitUntilExit()
-                    cont.resume(returning: data)
-                } catch {
-                    cont.resume(returning: nil)
-                }
-            }
-        }
-
-        guard let data = result,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
-
-        if let t = obj["title"] as? String { item.title = t }
-        if let u = obj["uploader"] as? String { item.uploader = u }
-        if let d = obj["duration"] as? Double { item.durationSeconds = d }
-        if let thumb = obj["thumbnail"] as? String, let u = URL(string: thumb) {
-            item.thumbnailURL = u
-        }
-        if case .fetchingInfo = item.status { item.statusLine = "Ready" }
-    }
-
     // MARK: - Actual download
 
     @MainActor
     private func run(_ item: DownloadItem) async {
+        let attempt = item.attemptID
         defer {
+            if item.attemptID == attempt { item.operationTask = nil }
             activeCount -= 1
             drain()
         }
 
+        guard !Task.isCancelled, item.isActive, items.contains(where: { $0.id == item.id }) else { return }
+        item.transfer = TransferProgress()
+        item.intermediateFiles.removeAll()
+        item.hasMeasuredProgress = false
+        item.speed = ""; item.eta = ""; item.outputFile = nil; item.lastRawError = nil
+        if case .local(let file) = item.source {
+            await runLocalClip(item, file: file, attempt: attempt)
+            return
+        }
         let dep = DependencyManager.shared
         guard FileManager.default.fileExists(atPath: dep.ytDlpPath.path) else {
             item.status = .failed("yt-dlp is not installed yet")
@@ -581,11 +556,15 @@ final class DownloadManager {
         }
 
         item.status = .downloading
-        item.statusLine = "Starting…"
+        item.statusLine = "Preparing…"
 
         let settings = AppSettings.shared
         let folder = settings.downloadFolderURL
-        let outputTemplate = folder.path + "/" + settings.filenameTemplate
+        var outputTemplate = folder.path + "/" + settings.filenameTemplate
+        if item.cutStart != nil {
+            outputTemplate = folder.appendingPathComponent("%(title).180B (clip_\(item.id.uuidString)).%(ext)s").path
+        }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
         var args: [String] = [
             "--newline",
@@ -594,8 +573,12 @@ final class DownloadManager {
             "-o", outputTemplate,
             "--ffmpeg-location", dep.binDirectory.path,
             "--no-mtime",
-            "--http-chunk-size", "10M",
-            "--throttled-rate", "100K",
+            "--no-simulate", "--no-quiet",
+            "--progress-delta", "0.25",
+            "--print", "before_dl:CATAPULT_META %(.{title,uploader,duration,thumbnail,requested_formats,format_id,filesize,filesize_approx})j",
+            "--print", "after_move:CATAPULT_FILE %(filepath)j",
+            "--progress-template", "download:CATAPULT_PROGRESS %(info.format_id)j %(progress.{downloaded_bytes,total_bytes,total_bytes_estimate,speed,eta,status,filename})j",
+            "--progress-template", "postprocess:CATAPULT_POST %(progress)j",
             "--js-runtimes", "deno",
             "--js-runtimes", "node",
             "--js-runtimes", "bun",
@@ -603,6 +586,8 @@ final class DownloadManager {
         ]
 
         if SupportedSite.match(url: item.ytdlpURL) == .youtube {
+            args.append(contentsOf: ["--http-chunk-size", "10M"])
+            if settings.rateLimitKBps == 0 { args.append(contentsOf: ["--throttled-rate", "100K"]) }
             args.append(contentsOf: [
                 "--extractor-args", "youtube:player_client=default,ios,web_safari,web_embedded,-tv"
             ])
@@ -617,15 +602,13 @@ final class DownloadManager {
         // normal per-site / global resolution. Helium isn't a browser
         // yt-dlp can read, so it arrives as an exported cookie file.
         let cookieSrc = item.forceCookieSource ?? settings.cookieSource(for: item.ytdlpURL)
-        var cookieFlags: [String] = []
-        if cookieSrc != .off {
-            cookieFlags = await CookieArgs.flags(for: item.ytdlpURL, source: cookieSrc)
-            if cookieFlags.isEmpty {
-                item.statusLine = "Couldn't read \(cookieSrc.label) cookies — continuing without them."
-            }
-        }
-        let usedCookies = !cookieFlags.isEmpty
-        args.append(contentsOf: cookieFlags)
+        let cookieImport = await CookieArgs.resolve(for: item.ytdlpURL, source: cookieSrc)
+        defer { cookieImport.cleanup() }
+        guard item.attemptID == attempt, item.isActive else { return }
+        item.cookieWarning = cookieImport.error
+        if cookieImport.error != nil { item.cookieFallbackTried = true }
+        let usedCookies = !cookieImport.arguments.isEmpty
+        args.append(contentsOf: cookieImport.arguments)
 
         // Proxy (blank string means off)
         let proxy = settings.proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -640,6 +623,9 @@ final class DownloadManager {
 
         // Thumbnail-only short-circuits: skip media and just save the image.
         if item.mode == .thumbnailOnly {
+            if let index = args.firstIndex(of: "after_move:CATAPULT_FILE %(filepath)j") {
+                args[index] = "after_video:CATAPULT_THUMB %(thumbnails.:.{filepath})j"
+            }
             args.append(contentsOf: [
                 "--skip-download",
                 "--write-thumbnail",
@@ -677,7 +663,7 @@ final class DownloadManager {
             switch item.mode {
             case .audio:
                 args.append(contentsOf: [
-                    "-x",
+                    "-f", "ba/b", "-x",
                     "--audio-format", audioFormat.rawValue,
                     "--audio-quality", "\(settings.audioQualityKbps)K",
                 ])
@@ -728,18 +714,14 @@ final class DownloadManager {
                                             compat: settings.preferCompatibleCodecs)
                 args.append(contentsOf: ["-f", fmt])
                 args.append(contentsOf: ["--merge-output-format", effectiveContainer.rawValue])
-                if let s = item.cutStart, let e = item.cutEnd, e > s {
-                    let section = String(format: "*%.2f-%.2f", s, e)
-                    args.append(contentsOf: ["--download-sections", section])
-                    args.append(contentsOf: [
-                        "--postprocessor-args",
-                        "Merger+ffmpeg_o1:-avoid_negative_ts make_zero -fflags +genpts"
-                    ])
-                }
             case .thumbnailOnly:
                 break // handled above
             }
 
+            if let start = item.cutStart, let end = item.cutEnd, end > start {
+                args.append(contentsOf: ["--download-sections", String(format: "*%.3f-%.3f", start, end)])
+                if item.clipAccuracy == .accurate { args.append("--force-keyframes-at-cuts") }
+            }
             args.append(item.ytdlpURL)
         }
 
@@ -752,51 +734,23 @@ final class DownloadManager {
         task.executableURL = dep.ytDlpPath
         task.arguments = args
         task.environment = DependencyManager.enhancedEnvironment
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        task.standardOutput = stdoutPipe
-        task.standardError = stderrPipe
         item.process = task
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let s = String(data: data, encoding: .utf8) else { return }
-            let itemID = item.id
-            Task { @MainActor in
-                DownloadManager.shared.parseProgress(s, forID: itemID)
-            }
+        let result = await MediaProcess.run(task) { [weak self, weak item] line in
+            guard let self, let item, item.attemptID == attempt, item.isActive else { return }
+            self.parseProgress(line, for: item)
         }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let s = String(data: data, encoding: .utf8) else { return }
-            let itemID = item.id
-            Task { @MainActor in
-                DownloadManager.shared.parseProgress(s, forID: itemID)
-            }
-        }
+        guard item.attemptID == attempt, item.isActive else { return }
+        item.process = nil
+        let finalPath = item.outputFile
+        if result.code == -1 { item.lastRawError = result.stderr }
 
-        let finalPath: URL? = await withCheckedContinuation { cont in
-            task.terminationHandler = { t in
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                Task { @MainActor in
-                    if t.terminationStatus == 0 {
-                        cont.resume(returning: item.outputFile)
-                    } else if case .cancelled = item.status {
-                        cont.resume(returning: nil)
-                    } else {
-                        cont.resume(returning: nil)
-                    }
-                }
+        if result.code == 0 {
+            guard let output = item.outputFile, FileManager.default.fileExists(atPath: output.path) else {
+                item.status = .failed("The downloader finished without producing a media file.")
+                item.statusLine = "Output file missing"
+                HistoryStore.shared.record(item)
+                return
             }
-            do {
-                try task.run()
-            } catch {
-                cont.resume(returning: nil)
-            }
-        }
-
-        if task.terminationStatus == 0 {
             if item.cookiesAutoRetried {
                 let site = SupportedSite.match(url: item.ytdlpURL)
                 if site != .generic {
@@ -806,20 +760,18 @@ final class DownloadManager {
 
             if (item.mode == .cut || item.mode == .audio),
                let src = finalPath ?? item.outputFile,
-               let rangeValues = validCutRange {
+               validCutRange != nil {
                 item.statusLine = "Finalizing clip…"
                 item.status = .postProcessing
-                let fixed = await fixClipDuration(file: src,
-                                                  duration: rangeValues.end - rangeValues.start,
-                                                  ffmpeg: dep.ffmpegPath)
-                let after = fixed ?? src
-                item.outputFile = Self.renameToNextClip(at: after) ?? after
+                item.outputFile = Self.renameToNextClip(at: src) ?? src
+                item.durationSeconds = (item.cutEnd ?? 0) - (item.cutStart ?? 0)
             }
 
             let shown = item.outputFile ?? finalPath
             await ensureFallbackThumbnailIfNeeded(for: item,
                                                   outputFile: shown,
                                                   ffmpeg: dep.ffmpegPath)
+            guard item.attemptID == attempt, item.isActive else { return }
             item.status = .finished(shown)
             item.progress = 1
             item.statusLine = "Finished"
@@ -871,6 +823,7 @@ final class DownloadManager {
             item.progress = 0
             item.statusLine = "Checking yt-dlp and ffmpeg before giving up..."
             let repaired = await DependencyManager.shared.troubleshootForDownloadFailure(message: previousLine)
+            guard item.attemptID == attempt, item.isActive else { return }
             if repaired {
                 item.status = .queued
                 item.statusLine = "Tools refreshed; retrying..."
@@ -1140,40 +1093,57 @@ final class DownloadManager {
 
     @MainActor
     private func parseProgress(_ chunk: String, for item: DownloadItem?) {
-        guard let item else { return }
+        guard let item, item.isActive else { return }
         for rawLine in chunk.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
             let line = String(rawLine)
-            if line.contains("[download]") {
-                // [download]  23.4% of 12.34MiB at 2.45MiB/s ETA 00:04
-                if let pct = Self.extract(regex: #"(\d+\.\d+)%"#, from: line),
-                   let p = Double(pct) {
-                    item.progress = p / 100
-                }
-                if let sp = Self.extract(regex: #"at\s+([\d\.]+[KMG]?i?B/s)"#, from: line) {
-                    item.speed = sp
-                }
-                if let eta = Self.extract(regex: #"ETA\s+([\d:]+)"#, from: line) {
-                    item.eta = eta
-                }
-                item.statusLine = "Downloading" +
-                    (item.speed.isEmpty ? "" : " · \(item.speed)") +
-                    (item.eta.isEmpty ? "" : " · ETA \(item.eta)")
-            } else if line.contains("[Merger]") || line.contains("[ExtractAudio]") ||
-                      line.contains("[VideoConvertor]") || line.contains("[EmbedThumbnail]") ||
-                      line.contains("[Metadata]") || line.contains("[FixupM3u8]") {
+            if line.hasPrefix("CATAPULT_META "), let data = line.dropFirst(14).data(using: .utf8),
+               let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                item.title = info["title"] as? String ?? item.title
+                item.uploader = info["uploader"] as? String ?? item.uploader
+                item.durationSeconds = (info["duration"] as? NSNumber)?.doubleValue ?? item.durationSeconds
+                item.thumbnailURL = (info["thumbnail"] as? String).flatMap(URL.init(string:)) ?? item.thumbnailURL
+                item.transfer.prepare(info["requested_formats"] as? [[String: Any]] ?? [info])
+            } else if line.hasPrefix("CATAPULT_FILE "), let data = line.dropFirst(14).data(using: .utf8),
+                      let path = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? String {
+                item.outputFile = URL(fileURLWithPath: path)
+            } else if line.hasPrefix("CATAPULT_THUMB "), let data = line.dropFirst(15).data(using: .utf8),
+                      let thumbnails = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                item.outputFile = thumbnails.compactMap { $0["filepath"] as? String }.map { URL(fileURLWithPath: $0) }
+                    .last { FileManager.default.fileExists(atPath: $0.path) }
+            } else if line.hasPrefix("CATAPULT_PROGRESS ") {
+                let body = String(line.dropFirst(18))
+                guard let separator = body.range(of: " {") else { continue }
+                let idData = String(body[..<separator.lowerBound]).data(using: .utf8)!
+                let payload = String(body[body.index(after: separator.lowerBound)...]).data(using: .utf8)!
+                guard let id = try? JSONSerialization.jsonObject(with: idData, options: .fragmentsAllowed) as? String,
+                      let progress = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else { continue }
+                if let path = progress["filename"] as? String { item.intermediateFiles.insert(URL(fileURLWithPath: path)) }
+                item.transfer.update(id: id, progress: progress)
+                item.status = .downloading
+                item.hasMeasuredProgress = item.transfer.fraction != nil
+                item.progress = item.transfer.fraction ?? 0
+                item.progressEstimated = item.transfer.isEstimated
+                if let speed = (progress["speed"] as? NSNumber)?.doubleValue, speed > 0 {
+                    item.speed = ByteCountFormatter.string(fromByteCount: Int64(speed), countStyle: .binary) + "/s"
+                } else { item.speed = "" }
+                if let eta = (progress["eta"] as? NSNumber)?.doubleValue, eta.isFinite && eta >= 0 {
+                    item.eta = "\(Int(eta))s"
+                } else { item.eta = "" }
+                let stream = id.lowercased().contains("audio") ? "Downloading audio" : "Downloading media"
+                item.statusLine = stream + (item.speed.isEmpty ? "" : " · \(item.speed)") + (item.eta.isEmpty ? "" : " · ETA \(item.eta)")
+            } else if line.hasPrefix("CATAPULT_POST ") || line.hasPrefix("[Merger]") ||
+                      line.hasPrefix("[ExtractAudio]") || line.hasPrefix("[VideoConvertor]") ||
+                      line.hasPrefix("[EmbedThumbnail]") || line.hasPrefix("[Metadata]") || line.hasPrefix("[Fixup") {
                 item.status = .postProcessing
-                item.statusLine = "Processing…"
+                item.speed = ""; item.eta = ""
+                item.statusLine = line.hasPrefix("[Merger]") ? "Merging…" : line.hasPrefix("[VideoConvertor]") ? "Converting…" : "Finalizing…"
             } else if line.hasPrefix("ERROR:") {
-                let msg = line
-                    .replacingOccurrences(of: "ERROR: ", with: "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                item.lastRawError = msg
-                item.statusLine = Self.friendlyError(for: msg)
-            } else if let dest = Self.extract(regex: #"Destination:\s+(.+)"#, from: line) {
-                let p = dest.trimmingCharacters(in: .whitespaces)
-                item.outputFile = URL(fileURLWithPath: p)
-            } else if let merged = Self.extract(regex: #"Merging formats into\s+"(.+?)""#, from: line) {
-                item.outputFile = URL(fileURLWithPath: merged)
+                let message = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                item.lastRawError = message
+                item.statusLine = Self.friendlyError(for: message)
+            } else if item.mode == .thumbnailOnly,
+                      let destination = Self.extract(regex: #"Writing video thumbnail.*? to: (.+)"#, from: line) {
+                item.outputFile = URL(fileURLWithPath: destination)
             }
         }
     }
@@ -1234,55 +1204,6 @@ final class DownloadManager {
         guard let m = re.firstMatch(in: s, range: NSRange(location: 0, length: ns.length)),
               m.numberOfRanges >= 2 else { return nil }
         return ns.substring(with: m.range(at: 1))
-    }
-
-    /// Rewrites the container with the actual clip duration so players don't show
-    /// the full original video length. Returns the (possibly renamed) final file URL.
-    private func fixClipDuration(file: URL, duration: Double, ffmpeg: URL) async -> URL? {
-        guard FileManager.default.fileExists(atPath: ffmpeg.path) else { return file }
-        guard FileManager.default.fileExists(atPath: file.path) else { return file }
-        let temp = file.deletingLastPathComponent()
-            .appendingPathComponent("." + file.lastPathComponent + ".tmp." + file.pathExtension)
-
-        let success: Bool = await withCheckedContinuation { cont in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let t = Process()
-                t.executableURL = ffmpeg
-                t.environment = DependencyManager.enhancedEnvironment
-                t.arguments = [
-                    "-y",
-                    "-i", file.path,
-                    "-t", String(format: "%.3f", duration),
-                    "-c", "copy",
-                    "-avoid_negative_ts", "make_zero",
-                    "-reset_timestamps", "1",
-                    "-movflags", "+faststart",
-                    "-map_metadata", "0",
-                    temp.path
-                ]
-                t.standardOutput = Pipe(); t.standardError = Pipe()
-                do {
-                    try t.run()
-                    t.waitUntilExit()
-                    cont.resume(returning: t.terminationStatus == 0)
-                } catch {
-                    cont.resume(returning: false)
-                }
-            }
-        }
-
-        guard success, FileManager.default.fileExists(atPath: temp.path) else {
-            try? FileManager.default.removeItem(at: temp)
-            return file
-        }
-        do {
-            try FileManager.default.removeItem(at: file)
-            try FileManager.default.moveItem(at: temp, to: file)
-            return file
-        } catch {
-            try? FileManager.default.removeItem(at: temp)
-            return file
-        }
     }
 
     /// Slots a device preset's recode recipe (or the default compat remux)
@@ -1388,7 +1309,7 @@ final class DownloadManager {
         let dir = file.deletingLastPathComponent()
         let ext = file.pathExtension
         let stem = file.deletingPathExtension().lastPathComponent
-        let re = try? NSRegularExpression(pattern: #" \(clip(?:_\d+|\d*)\)$"#)
+        let re = try? NSRegularExpression(pattern: #" \(clip(?:_[A-Za-z0-9-]+|\d*)\)$"#)
         let ns = stem as NSString
         let baseStem: String
         if let m = re?.firstMatch(in: stem, range: NSRange(location: 0, length: ns.length)),
@@ -1424,5 +1345,80 @@ final class DownloadManager {
         } else {
             return String(format: "%02d:%02d%@", m, s, String(fracStr))
         }
+    }
+}
+
+extension DownloadManager {
+    @MainActor
+    private func runLocalClip(_ item: DownloadItem, file: URL, attempt: UUID) async {
+        let settings = AppSettings.shared
+        guard let start = item.cutStart, let end = item.cutEnd,
+              start.isFinite, end.isFinite, start >= 0, end > start,
+              FileManager.default.fileExists(atPath: file.path) else {
+            item.status = .failed("Choose an available file and a valid trim range.")
+            item.statusLine = "Invalid clip source"
+            HistoryStore.shared.record(item)
+            return
+        }
+        let folder = settings.downloadFolderURL
+        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        catch {
+            item.status = .failed(error.localizedDescription)
+            HistoryStore.shared.record(item)
+            return
+        }
+        let ext = item.mode == .audio ? (item.overrides.audioFormat ?? settings.audioFormat).rawValue : (item.overrides.videoContainer ?? settings.videoContainer).rawValue
+        let temporary = folder.appendingPathComponent(".catapult-\(item.id.uuidString).\(ext)")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let quality = item.overrides.videoQuality ?? settings.videoQuality
+        let process = Process()
+        process.executableURL = DependencyManager.shared.ffmpegPath
+        process.environment = DependencyManager.enhancedEnvironment
+        process.arguments = ClipRecipe.arguments(input: file, output: temporary, start: start, end: end,
+                                                  audioOnly: item.mode == .audio, accuracy: item.clipAccuracy,
+                                                  bitrate: settings.audioQualityKbps, height: Int(quality.rawValue),
+                                                  normalize: settings.normalizeAudio && item.clipAccuracy == .accurate)
+        item.title = file.deletingPathExtension().lastPathComponent
+        item.status = .postProcessing
+        item.statusLine = item.clipAccuracy == .accurate ? "Exporting accurate clip…" : "Copying clip…"
+        item.process = process
+        let result = await MediaProcess.run(process) { line in
+            guard item.attemptID == attempt, item.isActive else { return }
+            if line.hasPrefix("out_time_us="), let micros = Double(line.dropFirst(12)) {
+                item.statusLine = "Exporting · \(MediaTime.format(min(end - start, micros / 1_000_000))) / \(MediaTime.format(end - start))"
+            }
+        }
+        guard item.attemptID == attempt, item.isActive else { return }
+        item.process = nil
+        guard result.code == 0, FileManager.default.fileExists(atPath: temporary.path) else {
+            let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            item.status = .failed(message.isEmpty ? "Clip export failed." : message)
+            item.statusLine = "Export failed"
+            HistoryStore.shared.record(item)
+            return
+        }
+        var index = 1
+        var target = folder.appendingPathComponent("\(item.title) (clip).\(ext)")
+        while FileManager.default.fileExists(atPath: target.path) {
+            index += 1
+            target = folder.appendingPathComponent("\(item.title) (clip\(index)).\(ext)")
+        }
+        do { try FileManager.default.moveItem(at: temporary, to: target) }
+        catch {
+            item.status = .failed(error.localizedDescription)
+            HistoryStore.shared.record(item)
+            return
+        }
+        item.outputFile = target
+        item.durationSeconds = end - start
+        await ensureFallbackThumbnailIfNeeded(for: item, outputFile: target, ffmpeg: DependencyManager.shared.ffmpegPath)
+        guard item.attemptID == attempt, item.isActive else { return }
+        item.progress = 1
+        item.status = .finished(target)
+        item.statusLine = "Saved"
+        HistoryStore.shared.record(item)
+        if settings.copyFileAfterDownload { Self.copyFileToPasteboard(target) }
+        if settings.openFolderOnFinish { NSWorkspace.shared.activateFileViewerSelecting([target]) }
+        if settings.showNotifications { NotificationHelper.show(title: "Clip saved", body: item.title) }
     }
 }

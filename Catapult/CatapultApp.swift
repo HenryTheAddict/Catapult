@@ -40,7 +40,16 @@ struct CatapultApp: App {
                 .environment(dependencies)
                 .preferredColorScheme(preferredScheme)
         }
-        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(trimLaunchBehavior)
+        .defaultSize(width: 900, height: 720)
+        .windowResizability(.automatic)
+    }
+
+    private var trimLaunchBehavior: SceneLaunchBehavior {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--trim-ui-test") { return .presented }
+        #endif
+        return .suppressed
     }
 
     private var preferredScheme: ColorScheme? {
@@ -69,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         FontLoader.registerBundled()
+        MotionPreferences.shared.start()
         NotificationHelper.configure(delegate: self)
 
         // Listen for "another copy tried to launch" pings so we can surface
