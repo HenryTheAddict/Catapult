@@ -75,7 +75,6 @@ struct MenuBarRootView: View {
                 .applePopoverStage(appeared, delay: 0.00)
             Divider().opacity(0.4)
             inputCard
-                .applePopoverStage(appeared, delay: 0.04)
             Divider().opacity(0.4)
             contentBody
                 .applePopoverStage(appeared, delay: 0.08)
@@ -90,7 +89,6 @@ struct MenuBarRootView: View {
         .background(backgroundLayer)
         .clipShape(RoundedRectangle(cornerRadius: dropTargeted ? 18 : 0, style: .continuous))
         .scaleEffect(reduceMotion ? 1 : appeared ? (dropTargeted ? 0.965 : 1) : 0.97, anchor: .top)
-        .opacity(appeared ? 1 : 0)
         .animation(H3.appleDrift, value: appeared)
         .overlay {
             if dropTargeted {

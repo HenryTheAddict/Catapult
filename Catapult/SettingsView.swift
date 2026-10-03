@@ -398,7 +398,7 @@ private struct SettingsPage<Content: View>: View {
                 .padding(.top, 2)
 
                 if bento {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], alignment: .leading, spacing: 14) { content() }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14, alignment: .top)], alignment: .leading, spacing: 14) { content() }
                 } else { content() }
             }
             .frame(maxWidth: 1040, alignment: .leading)
@@ -456,7 +456,8 @@ private struct GeneralSettingsTab: View {
                                     .font(H3.body(size: 11))
                                     .foregroundStyle(H3.ink500)
                             }
-                            Spacer(minLength: 12)
+                            Spacer(minLength: 0)
+                        }
                             Picker("", selection: $s.filenamePreset) {
                                 ForEach(FilenamePreset.allCases) { p in
                                     Text(p.label).tag(p)
@@ -464,8 +465,7 @@ private struct GeneralSettingsTab: View {
                             }
                             .labelsHidden()
                             .pickerStyle(.segmented)
-                            .frame(maxWidth: 360)
-                        }
+                            .frame(maxWidth: .infinity)
 
                         HStack(alignment: .top, spacing: 12) {
                             Text("Template")
