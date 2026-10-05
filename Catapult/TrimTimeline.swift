@@ -155,14 +155,13 @@ struct TrimTimelineView: View {
                 .onChange(of: proxy.size.width) { _, value in timelineWidth = value }
 
             }.frame(height: 110)
-            HStack(spacing: 12) {
-                Text("Drag the ends to trim. Scroll sideways to navigate. Pinch to zoom.")
-                    .font(H3.body(size: 10)).foregroundStyle(.secondary)
-                Spacer()
-                if !viewport.contains(start) { Button("Clip start") { center = start }.help("Show the start handle") }
-                if !viewport.contains(end) { Button("Clip end") { center = end }.help("Show the end handle") }
-            }.buttonStyle(.borderless)
-
+            if !viewport.contains(start) || !viewport.contains(end) {
+                HStack(spacing: 8) {
+                    if !viewport.contains(start) { Button("Clip start") { center = start }.help("Show the start handle") }
+                    if !viewport.contains(end) { Button("Clip end") { center = end }.help("Show the end handle") }
+                    Spacer()
+                }.buttonStyle(TrimControlStyle())
+            }
         }
         .allowsHitTesting(enabled)
         .task(id: "\(previewURL?.absoluteString ?? "")|\(viewport.lower)|\(viewport.span)") {
@@ -189,7 +188,10 @@ struct TrimTimelineView: View {
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            Text("Zoom").font(H3.body(size: 11)).foregroundStyle(.secondary)
+            Text("Timeline").font(H3.body(size: 12, weight: .medium))
+            Image(systemName: "questionmark.circle").font(.system(size: 11)).foregroundStyle(.tertiary)
+                .help("Drag edges to trim. Drag the filmstrip to seek. Drag the range bar to move the clip. Scroll horizontally to navigate; pinch to zoom. I/O set boundaries; arrows step frames.")
+            Spacer()
             Button { setZoom(zoom / 1.5) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out")
             Menu {
                 ForEach([1.0, 2, 4, 8, 16, 32, 50], id: \.self) { factor in
@@ -203,7 +205,7 @@ struct TrimTimelineView: View {
                     setZoom(zoom * (event.key == .leftArrow ? 1 / 1.5 : 1.5)); return .handled
                 }
             Button { setZoom(zoom * 1.5) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in")
-            Spacer()
+            Rectangle().fill(.primary.opacity(0.12)).frame(width: 1, height: 12).padding(.horizontal, 4)
             if !viewport.contains(currentTime) {
                 Button { center = currentTime } label: { Image(systemName: "scope") }.help("Show playhead")
             }
@@ -211,8 +213,8 @@ struct TrimTimelineView: View {
                 zoom = min(50, max(1, viewport.duration / max(minimumRange, (end - start) * 1.2)))
                 center = (start + end) / 2
             }
-            Button("Show all") { zoom = 1; center = viewport.duration / 2 }
-        }.buttonStyle(MediaActionStyle()).disabled(anchor != nil)
+            Button("Full source") { zoom = 1; center = viewport.duration / 2 }
+        }.buttonStyle(TrimControlStyle()).disabled(anchor != nil)
     }
     private func setZoom(_ factor: Double) {
         let next = min(50, max(1, factor))
@@ -242,7 +244,7 @@ struct TrimTimelineView: View {
                 .accessibilityHint("Drag to seek. Use the start and end handles to change the clip.")
             Rectangle().fill(.black.opacity(0.55)).frame(width: max(0, left - geometry.inset), height: 58).offset(x: geometry.inset).allowsHitTesting(false)
             Rectangle().fill(.black.opacity(0.55)).frame(width: max(0, geometry.width - geometry.inset - right), height: 58).offset(x: right).allowsHitTesting(false)
-            Rectangle().stroke(H3.blue400, lineWidth: 2).frame(width: max(0, right - left), height: 58).offset(x: left).allowsHitTesting(false)
+            Rectangle().stroke(H3.blue400.opacity(0.85), lineWidth: 1.5).frame(width: max(0, right - left), height: 58).offset(x: left).allowsHitTesting(false)
             if geometry.contains(currentTime) {
                 Rectangle().fill(.white).frame(width: 2, height: 58).offset(x: geometry.x(at: currentTime) - 1)
                     .shadow(color: .black.opacity(0.5), radius: 1).allowsHitTesting(false)
@@ -306,7 +308,7 @@ struct TrimTimelineView: View {
         let left = min(geometry.width - geometry.inset, max(geometry.inset, geometry.x(at: start)))
         let right = min(geometry.width - geometry.inset, max(geometry.inset, geometry.x(at: end)))
         return ZStack(alignment: .leading) {
-            Capsule().fill(.secondary.opacity(0.08)).frame(height: 24).padding(.horizontal, geometry.inset)
+            RoundedRectangle(cornerRadius: 3).fill(.secondary.opacity(0.05)).frame(height: 24).padding(.horizontal, geometry.inset)
             if right > left {
                 rangeSurface(width: right - left)
                     .contentShape(Rectangle()).background(TimelineCursor(cursor: .openHand))
@@ -320,11 +322,11 @@ struct TrimTimelineView: View {
         }.frame(height: 24)
     }
     private func rangeSurface(width: Double) -> some View {
-        RoundedRectangle(cornerRadius: 5).fill(H3.blue400.opacity(0.16))
+        RoundedRectangle(cornerRadius: 3).fill(.primary.opacity(0.07))
             .overlay {
                 if width > 120 {
-                    Label("Move range", systemImage: "arrow.left.and.right").font(H3.body(size: 10)).foregroundStyle(H3.blue400)
-                } else { Image(systemName: "arrow.left.and.right").font(.system(size: 9)).foregroundStyle(H3.blue400) }
+                    Label("Move clip", systemImage: "arrow.left.and.right").font(H3.body(size: 10)).foregroundStyle(.secondary)
+                } else { Image(systemName: "arrow.left.and.right").font(.system(size: 9)).foregroundStyle(.secondary) }
             }.frame(width: width, height: 24)
     }
     private func nudgeRange(_ delta: Double) {
@@ -498,12 +500,14 @@ private final class TimelineHostingView<Content: View>: NSHostingView<Content> {
     var onDragChange: ((CGPoint) -> Void)?
     var onDragEnd: ((CGPoint) -> Void)?
     private var dragging = false
+    override var acceptsFirstResponder: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         if bounds.contains(local), local.y >= 22 { return self }
         return super.hitTest(point)
     }
     override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
         dragging = onDragStart?(convert(event.locationInWindow, from: nil)) ?? false
         if !dragging { super.mouseDown(with: event) }
     }
@@ -517,4 +521,32 @@ private final class TimelineHostingView<Content: View>: NSHostingView<Content> {
     }
     override func scrollWheel(with event: NSEvent) { enclosingScrollView?.scrollWheel(with: event) }
     override func magnify(with event: NSEvent) { enclosingScrollView?.magnify(with: event) }
+}
+
+/// Quiet secondary controls for the trim workspace; color is reserved for the range and export.
+struct TrimControlStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.isFocused) private var focused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        Surface(configuration: configuration, enabled: enabled, focused: focused, reduceMotion: reduceMotion)
+    }
+    private struct Surface: View {
+        let configuration: ButtonStyle.Configuration
+        let enabled: Bool
+        let focused: Bool
+        let reduceMotion: Bool
+        @State private var hovered = false
+        var body: some View {
+            configuration.label.font(H3.body(size: 11, weight: .medium))
+                .foregroundStyle(H3.ink700).padding(.horizontal, 7).frame(minWidth: 28, minHeight: 28)
+                .background(RoundedRectangle(cornerRadius: 6).fill(.primary.opacity(configuration.isPressed ? 0.1 : hovered && enabled ? 0.06 : 0)))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? H3.blue400 : .clear, lineWidth: 2))
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+                .opacity(enabled ? 1 : 0.35)
+                .onHover { hovered = $0 }
+                .animation(reduceMotion ? nil : H3.easeOut, value: hovered)
+                .animation(reduceMotion ? nil : H3.appleSnap, value: configuration.isPressed)
+        }
+    }
 }
