@@ -8,6 +8,7 @@
 import Testing
 import Foundation
 import SQLite3
+import AppKit
 @testable import Catapult
 
 struct CatapultTests {
@@ -289,6 +290,42 @@ struct CookieCryptoTests {
 }
 
 struct TrimTimelineTests {
+    @Test @MainActor func wheelNavigationUsesNativeHorizontalScrollingAndForwardsVerticalEvents() throws {
+        let scroll = HorizontalTimelineScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 110))
+        scroll.hasHorizontalScroller = true
+        scroll.horizontalScrollElasticity = .none
+        scroll.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1600, height: 110))
+        scroll.tile()
+        let horizontal = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: -120, wheel3: 0))
+        scroll.scrollWheel(with: try #require(NSEvent(cgEvent: horizontal)))
+        #expect(scroll.contentView.bounds.origin.x > 0)
+        let position = scroll.contentView.bounds.origin.x
+        let parent = RecordingScrollResponder()
+        scroll.nextResponder = parent
+        let vertical = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: -120, wheel2: 0, wheel3: 0))
+        scroll.scrollWheel(with: try #require(NSEvent(cgEvent: vertical)))
+        #expect(parent.events == 1)
+        #expect(scroll.contentView.bounds.origin.x == position)
+    }
+    @Test func nativeScrollCoordinatesMatchDocumentAtEveryZoom() {
+        for zoom in [1.0, 2, 8, 50] {
+            let view = TrimTimelineGeometry(duration: 120, zoom: zoom, center: 70, width: 832)
+            let document = TrimTimelineGeometry(duration: 120, zoom: 1, center: nil, width: view.documentWidth)
+            for x in [16.0, 200, 400, 816] {
+                #expect(abs(document.time(at: x + view.scrollOffset) - view.documentTime(atViewportX: x)) < 0.000001)
+            }
+            #expect(abs(document.trackWidth / 120 - view.trackWidth / view.span) < 0.000001)
+        }
+    }
+    @Test func edgeDragContinuesAsViewportMovesWithoutPointerMovement() {
+        let before = TrimTimelineGeometry(duration: 120, zoom: 8, center: 60, width: 832)
+        let after = TrimTimelineGeometry(duration: 120, zoom: 8, center: 61, width: 832)
+        #expect(abs(after.documentTime(atViewportX: 810) - before.documentTime(atViewportX: 810) - 1) < 0.000001)
+        #expect(before.edgeSpeed(at: 16) == -1)
+        #expect(before.edgeSpeed(at: 816) == 1)
+        #expect(before.edgeSpeed(at: 400) == 0)
+        #expect(before.edgeSpeed(at: 900) == 1)
+    }
     @Test func coordinatesStayConsistentAtDifferentWidthsAndZooms() {
         for width in [320.0, 760, 1100] {
             for zoom in [1.0, 2, 10, 50] {
@@ -339,4 +376,9 @@ struct TrimTimelineTests {
         let invalid = TrimTimelineGeometry(duration: .nan, zoom: .infinity, center: .nan, width: 0)
         #expect(invalid.time(at: 0).isFinite && invalid.span > 0 && invalid.trackWidth > 0)
     }
+}
+
+@MainActor private final class RecordingScrollResponder: NSResponder {
+    var events = 0
+    override func scrollWheel(with event: NSEvent) { events += 1 }
 }

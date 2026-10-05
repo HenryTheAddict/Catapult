@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import AVFoundation
 
-/// All timeline positions use the same inset track, including the ruler and pan control.
+/// Shared time/point mapping for the visible viewport and the full scrollable source.
 nonisolated struct TrimTimelineGeometry {
     let duration: Double
     let span: Double
@@ -13,6 +13,17 @@ nonisolated struct TrimTimelineGeometry {
     var trackWidth: Double { max(1, width - 2 * inset) }
     var midpoint: Double { lower + span / 2 }
     var panLimit: Double { max(0, duration - span) }
+    var documentWidth: Double { trackWidth * duration / span + 2 * inset }
+    var scrollOffset: Double { lower / span * trackWidth }
+    func documentTime(atViewportX x: Double) -> Double {
+        min(duration, max(0, (x + scrollOffset - inset) / trackWidth * span))
+    }
+    func edgeSpeed(at x: Double) -> Double {
+        let margin = min(48, trackWidth / 5)
+        if x < inset + margin { return -min(1, max(0, (inset + margin - x) / margin)) }
+        if x > width - inset - margin { return min(1, max(0, (x - width + inset + margin) / margin)) }
+        return 0
+    }
 
     init(duration: Double, zoom: Double, center: Double?, width: Double, inset: Double = 16) {
         self.duration = duration.isFinite && duration > 0 ? duration : 0.25
@@ -80,15 +91,17 @@ struct TrimTimelineView: View {
     let onControlFocus: (Bool) -> Void
 
     private enum Handle: Hashable { case start, end }
-    private enum Control: Hashable { case handle(Handle), zoom, pan }
+    private enum Control: Hashable { case handle(Handle), zoom }
+    private enum DragKind { case boundary(Handle), scrub, range }
     private struct DragAnchor {
-        let geometry: TrimTimelineGeometry
         let selection: TrimSelection
+        let pointerTime: Double
     }
     @State private var anchor: DragAnchor?
+    @State private var dragKind: DragKind?
+    @State private var pointerX = 0.0
     @State private var thumbnails: [TimedThumbnail] = []
     @State private var timelineWidth = 800.0
-    @State private var space = UUID()
     @Environment(\.isEnabled) private var enabled
     @FocusState private var focusedControl: Control?
     private var viewport: TrimTimelineGeometry {
@@ -100,22 +113,73 @@ struct TrimTimelineView: View {
         VStack(spacing: 8) {
             toolbar
             GeometryReader { proxy in
-                let geometry = TrimTimelineGeometry(duration: duration, zoom: zoom, center: center, width: proxy.size.width)
-                VStack(spacing: 6) {
-                    ruler(geometry)
-                    filmstrip(geometry)
-                    moveBar(geometry)
+                let visible = TrimTimelineGeometry(duration: duration, zoom: zoom, center: center, width: proxy.size.width)
+                let document = TrimTimelineGeometry(duration: duration, zoom: 1, center: nil, width: visible.documentWidth)
+                NativeTrimScrollView(width: visible.documentWidth, offset: visible.scrollOffset,
+                                     onScroll: { offset in
+                    guard enabled, anchor == nil else { return }
+                    let lower = min(visible.panLimit, max(0, offset / visible.trackWidth * visible.span))
+                    center = lower + visible.span / 2
+                }, onMagnify: { delta, x in
+                    guard enabled, anchor == nil else { return }
+                    let next = min(50, max(1, zoom * max(0.1, 1 + delta)))
+                    let nextCenter = viewport.zoomedCenter(to: next, anchor: viewport.time(at: x))
+                    zoom = next; center = nextCenter
+                }, onDragStart: { point in
+                    guard enabled else { return false }
+                    let kind: DragKind
+                    if point.y >= 22 && point.y <= 80 {
+                        if abs(point.x - document.x(at: start)) <= 14 { kind = .boundary(.start); focusedControl = .handle(.start) }
+                        else if abs(point.x - document.x(at: end)) <= 14 { kind = .boundary(.end); focusedControl = .handle(.end) }
+                        else { kind = .scrub; focusedControl = nil }
+                    } else if point.y >= 86 && point.y <= 110 && point.x >= document.x(at: start) && point.x <= document.x(at: end) {
+                        kind = .range; focusedControl = nil
+                    } else { return false }
+                    begin(kind, location: point.x, geometry: document)
+                    pointerX = point.x - viewport.scrollOffset; applyDrag()
+                    return true
+                }, onDragChange: { point in
+                    pointerX = point.x - viewport.scrollOffset; applyDrag()
+                }, onDragEnd: { point in
+                    pointerX = point.x - viewport.scrollOffset; applyDrag(precise: true); finish()
+                }) {
+                    VStack(spacing: 6) {
+                        ruler(document)
+                        filmstrip(document)
+                        moveBar(document)
+                    }
+                    .frame(width: visible.documentWidth, height: 110, alignment: .top)
                 }
+                .frame(width: proxy.size.width, height: 110)
                 .onAppear { timelineWidth = proxy.size.width }
                 .onChange(of: proxy.size.width) { _, value in timelineWidth = value }
+
             }.frame(height: 110)
-            if viewport.panLimit > 0 { panControl }
-            Text("Drag the ends to trim · Drag the video to seek · Drag the range bar to move the clip")
-                .font(H3.body(size: 10)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 12) {
+                Text("Drag the ends to trim. Scroll sideways to navigate. Pinch to zoom.")
+                    .font(H3.body(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                if !viewport.contains(start) { Button("Clip start") { center = start }.help("Show the start handle") }
+                if !viewport.contains(end) { Button("Clip end") { center = end }.help("Show the end handle") }
+            }.buttonStyle(.borderless)
+
         }
-        .coordinateSpace(name: space)
         .allowsHitTesting(enabled)
-        .task(id: "\(previewURL?.absoluteString ?? "")|\(viewport.lower)|\(viewport.span)") { await loadThumbnails() }
+        .task(id: "\(previewURL?.absoluteString ?? "")|\(viewport.lower)|\(viewport.span)") {
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            await loadThumbnails()
+        }
+        .task(id: anchor != nil) {
+            while anchor != nil && !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(16))
+                guard !Task.isCancelled, anchor != nil else { return }
+                let speed = viewport.edgeSpeed(at: pointerX)
+                guard speed != 0 else { continue }
+                let next = min(viewport.panLimit, max(0, viewport.lower + speed * viewport.span * 0.018))
+                if next != viewport.lower { center = next + viewport.span / 2; applyDrag() }
+            }
+        }
         .onChange(of: focusedControl) { _, value in onControlFocus(value != nil) }
         .onDisappear {
             if anchor != nil { onInteractionEnd() }
@@ -127,59 +191,41 @@ struct TrimTimelineView: View {
         HStack(spacing: 8) {
             Text("Zoom").font(H3.body(size: 11)).foregroundStyle(.secondary)
             Button { setZoom(zoom / 1.5) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out")
-            Slider(value: Binding(get: { log2(max(1, zoom)) }, set: { setZoom(pow(2, $0)) }), in: 0...log2(50))
-                .frame(width: 110).accessibilityLabel("Timeline zoom")
-                .focusable()
-                .focused($focusedControl, equals: .zoom)
-                .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in focusedControl = .zoom })
+            Menu {
+                ForEach([1.0, 2, 4, 8, 16, 32, 50], id: \.self) { factor in
+                    Button(String(format: "%.0f×", factor)) { setZoom(factor) }
+                }
+            } label: { Text(String(format: "%.1f×", zoom)).font(H3.mono(size: 11)).frame(width: 48) }
+                .accessibilityLabel("Timeline zoom")
+                .focusable().focused($focusedControl, equals: .zoom)
                 .onKeyPress(keys: [.leftArrow, .rightArrow], phases: [.down, .repeat]) { event in
                     guard enabled, anchor == nil else { return .ignored }
-                    let step = event.modifiers.contains(.shift) ? 1.0 : 0.25
-                    setZoom(zoom * pow(2, event.key == .leftArrow ? -step : step))
-                    return .handled
+                    setZoom(zoom * (event.key == .leftArrow ? 1 / 1.5 : 1.5)); return .handled
                 }
             Button { setZoom(zoom * 1.5) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in")
-            Text(String(format: "%.1f×", zoom)).font(H3.mono(size: 10)).frame(width: 40)
             Spacer()
+            if !viewport.contains(currentTime) {
+                Button { center = currentTime } label: { Image(systemName: "scope") }.help("Show playhead")
+            }
             Button("Fit range") {
                 zoom = min(50, max(1, viewport.duration / max(minimumRange, (end - start) * 1.2)))
                 center = (start + end) / 2
             }
             Button("Show all") { zoom = 1; center = viewport.duration / 2 }
-        }.buttonStyle(.borderless).disabled(anchor != nil)
+        }.buttonStyle(MediaActionStyle()).disabled(anchor != nil)
     }
     private func setZoom(_ factor: Double) {
         let next = min(50, max(1, factor))
         let nextCenter = viewport.zoomedCenter(to: next, anchor: currentTime)
         zoom = next; center = nextCenter
     }
-    private var panControl: some View {
-        HStack(spacing: 10) {
-            Text("View").font(H3.body(size: 11)).foregroundStyle(.secondary)
-            Slider(value: Binding(get: { viewport.lower }, set: { center = $0 + viewport.span / 2 }), in: 0...max(0.001, viewport.panLimit))
-                .accessibilityLabel("Timeline position")
-                .accessibilityValue("\(MediaTime.format(viewport.lower)) to \(MediaTime.format(viewport.upper))")
-                .disabled(viewport.panLimit <= 0 || anchor != nil)
-                .focusable()
-                .focused($focusedControl, equals: .pan)
-                .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in focusedControl = .pan })
-                .onKeyPress(keys: [.leftArrow, .rightArrow], phases: [.down, .repeat]) { event in
-                    guard enabled, anchor == nil else { return .ignored }
-                    let step = viewport.span * (event.modifiers.contains(.shift) ? 0.1 : 0.02)
-                    let lower = min(viewport.panLimit, max(0, viewport.lower + (event.key == .leftArrow ? -step : step)))
-                    center = lower + viewport.span / 2
-                    return .handled
-                }
-            Text("\(stamp(viewport.lower)) – \(stamp(viewport.upper))").font(H3.mono(size: 10)).foregroundStyle(.secondary).fixedSize()
-        }
-    }
     private func ruler(_ geometry: TrimTimelineGeometry) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(0..<5) { index in
-                Text(stamp(geometry.lower + Double(index) / 4 * geometry.span))
+                Text(stamp(viewport.lower + Double(index) / 4 * viewport.span))
                     .font(H3.mono(size: 10)).foregroundStyle(.secondary)
                     .frame(width: 80, alignment: index == 0 ? .leading : index == 4 ? .trailing : .center)
-                    .offset(x: geometry.x(at: geometry.lower + Double(index) / 4 * geometry.span) - (index == 0 ? 0 : index == 4 ? 80 : 40))
+                    .offset(x: geometry.x(at: viewport.lower + Double(index) / 4 * viewport.span) - (index == 0 ? 0 : index == 4 ? 80 : 40))
             }
         }.frame(maxWidth: .infinity, alignment: .leading).frame(height: 16).accessibilityHidden(true)
     }
@@ -192,15 +238,6 @@ struct TrimTimelineView: View {
                 .padding(.horizontal, geometry.inset)
                 .contentShape(Rectangle())
                 .background(TimelineCursor(cursor: .crosshair))
-                .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(space))
-                    .onChanged { value in
-                        focusedControl = nil
-                        begin(geometry)
-                        // The coordinate space includes the toolbar; its horizontal inset is shared.
-                        onScrub(geometry.time(at: value.location.x))
-                    }.onEnded { value in
-                        onScrubEnd(geometry.time(at: value.location.x)); finish()
-                    })
                 .accessibilityLabel("Video timeline")
                 .accessibilityHint("Drag to seek. Use the start and end handles to change the clip.")
             Rectangle().fill(.black.opacity(0.55)).frame(width: max(0, left - geometry.inset), height: 58).offset(x: geometry.inset).allowsHitTesting(false)
@@ -215,17 +252,21 @@ struct TrimTimelineView: View {
         }.frame(height: 58)
     }
     private func thumbnailStrip(_ geometry: TrimTimelineGeometry) -> some View {
-        let slots = max(6, Int(geometry.trackWidth / 70))
-        return HStack(spacing: 1) {
-            ForEach(0..<slots, id: \.self) { index in
-                let time = geometry.lower + (Double(index) + 0.5) / Double(slots) * geometry.span
+        let tileWidth = 70.0
+        let first = max(0, Int(floor(viewport.scrollOffset / tileWidth)) - 1)
+        let last = min(Int(ceil(geometry.trackWidth / tileWidth)), Int(ceil((viewport.scrollOffset + viewport.width) / tileWidth)) + 1)
+        return ZStack(alignment: .leading) {
+            Rectangle().fill(.secondary.opacity(0.12))
+            ForEach(first..<max(first, last), id: \.self) { index in
+                let time = geometry.time(at: geometry.inset + (Double(index) + 0.5) * tileWidth)
                 let nearest = thumbnails.min { abs($0.time - time) < abs($1.time - time) }
+                let image = nearest.flatMap { abs($0.time - time) <= viewport.span / 12 ? $0.image : nil }
                 Group {
-                    if let image = nearest?.image { Image(nsImage: image).resizable().scaledToFill() }
-                    else { Rectangle().fill(.secondary.opacity(0.12)).overlay(Image(systemName: "film").foregroundStyle(.tertiary)) }
-                }.frame(width: max(1, (geometry.trackWidth - Double(slots - 1)) / Double(slots)), height: 58).clipped()
+                    if let image { Image(nsImage: image).resizable().scaledToFill() }
+                    else { Rectangle().fill(.secondary.opacity(0.08)).overlay(Image(systemName: "film").foregroundStyle(.tertiary)) }
+                }.frame(width: tileWidth - 1, height: 58).clipped().offset(x: Double(index) * tileWidth)
             }
-        }.frame(width: geometry.trackWidth, height: 58).accessibilityHidden(true)
+        }.frame(width: geometry.trackWidth, height: 58).clipped().accessibilityHidden(true)
     }
     @ViewBuilder private func boundary(_ handle: Handle, geometry: TrimTimelineGeometry) -> some View {
         let seconds = handle == .start ? start : end
@@ -233,7 +274,6 @@ struct TrimTimelineView: View {
         let x = min(geometry.width - geometry.inset, max(geometry.inset, geometry.x(at: seconds)))
         if isVisible {
             handleSurface(handle)
-                .gesture(boundaryDrag(handle, geometry: geometry))
                 .focusable().focused($focusedControl, equals: .handle(handle))
                 .onKeyPress(keys: [.leftArrow, .rightArrow], phases: [.down, .repeat]) { event in
                     let step = event.modifiers.contains(.shift) ? 1 : frameStep
@@ -262,17 +302,6 @@ struct TrimTimelineView: View {
             .frame(width: 18, height: 58).padding(.horizontal, 5).contentShape(Rectangle())
             .background(TimelineCursor(cursor: .resizeLeftRight))
     }
-    private func boundaryDrag(_ handle: Handle, geometry: TrimTimelineGeometry) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named(space))
-            .onChanged { value in
-                begin(geometry)
-                guard let anchor else { return }
-                let initial = handle == .start ? anchor.selection.start : anchor.selection.end
-                update(handle, to: anchor.geometry.draggedTime(initial: initial, translation: value.translation.width))
-                let target = handle == .start ? start : end
-                center = geometry.centerKeepingVisible(target); onScrub(target)
-            }.onEnded { _ in onScrubEnd(handle == .start ? start : end); finish() }
-    }
     private func moveBar(_ geometry: TrimTimelineGeometry) -> some View {
         let left = min(geometry.width - geometry.inset, max(geometry.inset, geometry.x(at: start)))
         let right = min(geometry.width - geometry.inset, max(geometry.inset, geometry.x(at: end)))
@@ -281,7 +310,6 @@ struct TrimTimelineView: View {
             if right > left {
                 rangeSurface(width: right - left)
                     .contentShape(Rectangle()).background(TimelineCursor(cursor: .openHand))
-                    .gesture(rangeDrag(geometry))
                     .accessibilityLabel("Move clip range").accessibilityValue("\(MediaTime.format(start)) to \(MediaTime.format(end))")
                     .accessibilityAdjustableAction { direction in
                         nudgeRange(direction == .increment ? frameStep : -frameStep)
@@ -305,23 +333,30 @@ struct TrimTimelineView: View {
         onMoveSelection(TrimTimelineGeometry.move(TrimSelection(start: start, end: end), by: delta, duration: viewport.duration))
         onInteractionEnd()
     }
-    private func rangeDrag(_ geometry: TrimTimelineGeometry) -> some Gesture {
-        DragGesture(minimumDistance: 2)
-            .onChanged { value in
-                focusedControl = nil
-                begin(geometry)
-                guard let anchor else { return }
-                let delta = Double(value.translation.width) / anchor.geometry.trackWidth * anchor.geometry.span
-                onMoveSelection(TrimTimelineGeometry.move(anchor.selection, by: delta, duration: geometry.duration))
-            }.onEnded { _ in finish() }
-    }
-    private func begin(_ geometry: TrimTimelineGeometry) {
+    private func begin(_ kind: DragKind, location: Double, geometry: TrimTimelineGeometry) {
         if anchor == nil {
-            anchor = DragAnchor(geometry: geometry, selection: TrimSelection(start: start, end: end))
+            anchor = DragAnchor(selection: TrimSelection(start: start, end: end), pointerTime: geometry.time(at: location))
+            dragKind = kind
             onInteractionBegin()
         }
     }
-    private func finish() { anchor = nil; onInteractionEnd() }
+    private func applyDrag(precise: Bool = false) {
+        guard let anchor, let dragKind else { return }
+        let pointerTime = viewport.documentTime(atViewportX: pointerX)
+        let delta = pointerTime - anchor.pointerTime
+        switch dragKind {
+        case .boundary(let handle):
+            update(handle, to: (handle == .start ? anchor.selection.start : anchor.selection.end) + delta)
+            let target = handle == .start ? start : end
+            if precise { center = viewport.centerKeepingVisible(target); onScrubEnd(target) }
+            else { onScrub(target) }
+        case .scrub:
+            if precise { onScrubEnd(pointerTime) } else { onScrub(pointerTime) }
+        case .range:
+            onMoveSelection(TrimTimelineGeometry.move(anchor.selection, by: delta, duration: viewport.duration))
+        }
+    }
+    private func finish() { anchor = nil; dragKind = nil; onInteractionEnd() }
     private func update(_ handle: Handle, to time: Double) {
         if handle == .start { start = min(max(0, time), end - minimumRange) }
         else { end = min(viewport.duration, max(start + minimumRange, time)) }
@@ -372,4 +407,114 @@ private struct TimelineCursor: NSViewRepresentable {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func resetCursorRects() { addCursorRect(bounds, cursor: cursor) }
     }
+}
+
+/// AppKit owns horizontal wheel momentum; vertical events continue to the editor's scroll view.
+private struct NativeTrimScrollView<Content: View>: NSViewRepresentable {
+    let width: Double
+    let offset: Double
+    let onScroll: (Double) -> Void
+    let onMagnify: (Double, Double) -> Void
+    let onDragStart: (CGPoint) -> Bool
+    let onDragChange: (CGPoint) -> Void
+    let onDragEnd: (CGPoint) -> Void
+    @ViewBuilder var content: () -> Content
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> HorizontalTimelineScrollView {
+        let scroll = HorizontalTimelineScrollView()
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = true
+        scroll.hasVerticalScroller = false
+        scroll.scrollerStyle = .overlay
+        scroll.autohidesScrollers = true
+        scroll.horizontalScrollElasticity = .none
+        scroll.verticalScrollElasticity = .none
+        let host = TimelineHostingView(rootView: content())
+        host.sizingOptions = []
+        host.frame = NSRect(x: 0, y: 0, width: width, height: 110)
+        scroll.documentView = host
+        scroll.contentView.postsBoundsChangedNotifications = true
+        let coordinator = context.coordinator
+        coordinator.host = host
+        coordinator.observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak scroll, weak coordinator] _ in
+            guard let scroll, let coordinator, !coordinator.updating else { return }
+            let x = scroll.contentView.bounds.origin.x
+            coordinator.onScroll?(x)
+        }
+        return scroll
+    }
+    func updateNSView(_ scroll: HorizontalTimelineScrollView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.onScroll = onScroll
+        scroll.onMagnify = onMagnify
+        coordinator.host?.onDragStart = onDragStart
+        coordinator.host?.onDragChange = onDragChange
+        coordinator.host?.onDragEnd = onDragEnd
+        coordinator.updating = true
+        coordinator.host?.rootView = content()
+        coordinator.host?.frame = NSRect(x: 0, y: 0, width: width, height: 110)
+        if abs(scroll.contentView.bounds.origin.x - offset) > 0.5 {
+            scroll.contentView.scroll(to: NSPoint(x: offset, y: 0))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        coordinator.updating = false
+    }
+    static func dismantleNSView(_ scroll: HorizontalTimelineScrollView, coordinator: Coordinator) {
+        if let observer = coordinator.observer { NotificationCenter.default.removeObserver(observer) }
+        coordinator.observer = nil; coordinator.onScroll = nil; scroll.onMagnify = nil
+        coordinator.host?.onDragStart = nil
+        coordinator.host?.onDragChange = nil
+        coordinator.host?.onDragEnd = nil
+    }
+    final class Coordinator {
+        var host: TimelineHostingView<Content>?
+        var observer: Any?
+        var updating = false
+        var onScroll: ((Double) -> Void)?
+    }
+}
+final class HorizontalTimelineScrollView: NSScrollView {
+    var onMagnify: ((Double, Double) -> Void)?
+    override func scrollWheel(with event: NSEvent) {
+        if abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) || event.modifierFlags.contains(.shift) {
+            let delta = event.modifierFlags.contains(.shift) && event.scrollingDeltaX == 0 ? event.scrollingDeltaY : event.scrollingDeltaX
+            let movement = delta * (event.hasPreciseScrollingDeltas ? 1 : 12)
+            let limit = max(0, (documentView?.frame.width ?? 0) - contentView.bounds.width)
+            let x = min(limit, max(0, contentView.bounds.origin.x - movement))
+            contentView.scroll(to: NSPoint(x: x, y: 0))
+            reflectScrolledClipView(contentView)
+        } else { nextResponder?.scrollWheel(with: event) }
+    }
+    override func magnify(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        onMagnify?(event.magnification, point.x)
+    }
+}
+
+/// Own the pointer stream so replacing thumbnail views cannot cancel a trim drag.
+private final class TimelineHostingView<Content: View>: NSHostingView<Content> {
+    var onDragStart: ((CGPoint) -> Bool)?
+    var onDragChange: ((CGPoint) -> Void)?
+    var onDragEnd: ((CGPoint) -> Void)?
+    private var dragging = false
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if bounds.contains(local), local.y >= 22 { return self }
+        return super.hitTest(point)
+    }
+    override func mouseDown(with event: NSEvent) {
+        dragging = onDragStart?(convert(event.locationInWindow, from: nil)) ?? false
+        if !dragging { super.mouseDown(with: event) }
+    }
+    override func mouseDragged(with event: NSEvent) {
+        if dragging { onDragChange?(convert(event.locationInWindow, from: nil)) }
+        else { super.mouseDragged(with: event) }
+    }
+    override func mouseUp(with event: NSEvent) {
+        if dragging { onDragEnd?(convert(event.locationInWindow, from: nil)); dragging = false }
+        else { super.mouseUp(with: event) }
+    }
+    override func scrollWheel(with event: NSEvent) { enclosingScrollView?.scrollWheel(with: event) }
+    override func magnify(with event: NSEvent) { enclosingScrollView?.magnify(with: event) }
 }
