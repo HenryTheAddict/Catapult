@@ -290,6 +290,21 @@ struct CookieCryptoTests {
 }
 
 struct TrimTimelineTests {
+    @Test func filmstripRoutesScrubbingTrimmingAndOptionalRangeMovement() {
+        let y = TrimTimelineMetrics.filmstripTop + TrimTimelineMetrics.filmstripHeight / 2
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 300, y: y), startX: 100, endX: 500, option: false) == .scrub)
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 300, y: y), startX: 100, endX: 500, option: true) == .range)
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 50, y: y), startX: 100, endX: 500, option: true) == .scrub)
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 88, y: y), startX: 100, endX: 500, option: true) == .start)
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 512, y: y), startX: 100, endX: 500, option: false) == .end)
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 100, y: 0), startX: 100, endX: 500, option: false) == nil)
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 100, y: TrimTimelineMetrics.documentHeight), startX: 100, endX: 500, option: false) == nil)
+    }
+    @Test func overlappingHandleTargetsChooseTheNearestBoundary() {
+        let y = TrimTimelineMetrics.filmstripTop + 10
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 101, y: y), startX: 100, endX: 108, option: false) == .start)
+        #expect(TrimTimelineMetrics.target(at: CGPoint(x: 107, y: y), startX: 100, endX: 108, option: false) == .end)
+    }
     @Test @MainActor func wheelNavigationUsesNativeHorizontalScrollingAndForwardsVerticalEvents() throws {
         let scroll = HorizontalTimelineScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 110))
         scroll.hasHorizontalScroller = true

@@ -19,6 +19,7 @@ import UniformTypeIdentifiers
 }
 
 struct CutWindowHost: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(DownloadManager.self) private var downloads
     @Environment(DependencyManager.self) private var dependencies
     @Environment(AppSettings.self) private var settings
@@ -26,6 +27,7 @@ struct CutWindowHost: View {
     @State private var source: MediaSource = .online("")
     @State private var link = ""
     @State private var showLinkEntry = false
+    @State private var showExportSettings = false
     @State private var title = "Choose a link or media file"
     @State private var uploader = ""
     @State private var duration = 0.0
@@ -36,6 +38,7 @@ struct CutWindowHost: View {
     @State private var thumbnailURL: URL?
     @State private var previewURL: URL?
     @State private var player: AVPlayer?
+    @State private var audioOnly = false
     @State private var currentTime = 0.0
     @State private var frameStep = 0.1
     @State private var isPlaying = false
@@ -67,8 +70,9 @@ struct CutWindowHost: View {
     @State private var historyTask: Task<Void, Never>?
     @State private var startInputInvalid = false
     @State private var endInputInvalid = false
+    @State private var durationInputInvalid = false
     private var selection: TrimSelection { TrimSelection(start: startSeconds, end: endSeconds) }
-    private var selectionIsValid: Bool { MediaTime.valid(start: startSeconds, end: endSeconds, duration: duration) && !startInputInvalid && !endInputInvalid }
+    private var selectionIsValid: Bool { MediaTime.valid(start: startSeconds, end: endSeconds, duration: duration) && !startInputInvalid && !endInputInvalid && !durationInputInvalid }
     private var busy: Bool { job?.isActive == true }
     private var startBinding: Binding<Double> {
         Binding(get: { startSeconds }, set: { setRange(start: min($0, max(0, endSeconds - min(0.25, duration))), end: endSeconds) })
@@ -79,25 +83,23 @@ struct CutWindowHost: View {
     var body: some View {
         VStack(spacing: 0) {
             editorHeader
-            Divider()
             if showLinkEntry || (source.isOnline && duration == 0) { linkEntry.padding(.horizontal, 20).padding(.top, 12) }
             if let loadError { notice(loadError, symbol: "exclamationmark.triangle") }
             if let cookieWarning { notice(cookieWarning, symbol: "key.slash") }
-            HStack(alignment: .top, spacing: 16) {
-                VStack(spacing: 12) {
-                    preview.frame(minHeight: 160, maxHeight: .infinity)
-                    transport
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                inspector.frame(width: 228).frame(maxHeight: .infinity)
-            }.padding(16).frame(minHeight: 200, maxHeight: .infinity)
-            Divider()
-            timeline.padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
-                .background(H3.cardFill.opacity(0.45))
+            VStack(spacing: 10) {
+                preview.frame(minHeight: 160, maxHeight: .infinity)
+                transport
+            }.padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 12)
+                .frame(maxHeight: .infinity)
+            VStack(spacing: 12) {
+                timeline
+                rangeFields.id(source)
+            }.padding(.horizontal, 20).padding(.bottom, 16)
             Divider()
             footer.padding(.horizontal, 20).padding(.vertical, 12)
         }
         .frame(minWidth: 760, idealWidth: 900, minHeight: 640, idealHeight: 720)
-        .background(H3.ink50).h3WindowChrome()
+        .background(Color(nsColor: .windowBackgroundColor)).h3WindowChrome()
         .background(TrimKeyboardMonitor { key, modifiers in handleKey(key, modifiers: modifiers) })
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard !busy, let provider = providers.first else { return false }
@@ -120,7 +122,6 @@ struct CutWindowHost: View {
     }
     private var editorHeader: some View {
         HStack(spacing: 12) {
-            Image(systemName: "scissors").font(.system(size: 16, weight: .medium)).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 3) {
                 Text(duration > 0 ? title : "Trim media").font(H3.body(size: 15, weight: .semibold)).lineLimit(1)
                 Text(duration > 0 ? sourceDetails : "Choose a file or paste a link")
@@ -154,79 +155,73 @@ struct CutWindowHost: View {
     private var timeline: some View {
         TrimTimelineView(start: startBinding, end: endBinding, zoom: $zoom,
                          center: $timelineCenter, duration: duration, currentTime: currentTime,
-                         frameStep: frameStep, previewURL: previewURL,
+                         frameStep: frameStep, previewURL: previewURL, audioOnly: audioOnly,
                          onScrub: { seek($0, precise: false) }, onScrubEnd: { seek($0, precise: true) },
                          onMoveSelection: { setRange(start: $0.start, end: $0.end) },
                          onInteractionBegin: beginTimelineEdit, onInteractionEnd: endTimelineEdit,
                          onControlFocus: { timelineControlFocused = $0 })
             .id(source).disabled(busy || duration <= 0)
     }
-    private var inspector: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Clip range").font(H3.body(size: 12, weight: .semibold))
-                        Spacer()
-                        Button { setRange(start: 0, end: duration); zoom = 1; timelineCenter = duration / 2 } label: { Image(systemName: "arrow.counterclockwise") }
-                            .buttonStyle(TrimControlStyle()).help("Reset to the full source")
-                            .accessibilityLabel("Reset clip range")
+    private var rangeFields: some View {
+        HStack(alignment: .top, spacing: 20) {
+            boundaryField(isStart: true)
+            boundaryField(isStart: false)
+            Spacer(minLength: 0)
+            TimeField(label: "Duration", seconds: Binding(get: { max(0, endSeconds - startSeconds) }, set: {
+                setRange(start: startSeconds, end: startSeconds + $0)
+            }), min: min(0.25, duration), max: max(0, duration - startSeconds), invalid: $durationInputInvalid)
+                .frame(width: 182, alignment: .leading)
+            Button { setRange(start: 0, end: duration); zoom = 1; timelineCenter = duration / 2 } label: { Image(systemName: "arrow.counterclockwise") }
+                .buttonStyle(TrimControlStyle()).help("Reset to the full source")
+                .accessibilityLabel("Reset clip range")
+        }.disabled(busy || duration <= 0)
+    }
+    private var exportSummary: String {
+        let format = asAudio ? audioFormat.label : videoContainer.label
+        let quality = asAudio || accuracy == .fast ? nil : videoQuality.label
+        return [format, quality, accuracy == .accurate ? "Accurate" : "Fast"].compactMap { $0 }.joined(separator: " · ")
+    }
+    private var exportSettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Export settings").font(H3.body(size: 14, weight: .semibold))
+            Picker("Output", selection: $asAudio) { Text("Video").tag(false); Text("Audio").tag(true) }
+                .labelsHidden().pickerStyle(.segmented)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                GridRow {
+                    Text("Format").foregroundStyle(.secondary)
+                    if asAudio {
+                        Picker("Format", selection: $audioFormat) { ForEach(AudioFormat.allCases) { Text($0.label).tag($0) } }.labelsHidden()
+                    } else {
+                        Picker("Format", selection: $videoContainer) { ForEach(VideoContainer.allCases) { Text($0.label).tag($0) } }.labelsHidden()
                     }
-                    boundaryField(isStart: true)
-                    boundaryField(isStart: false)
-                    HStack {
-                        Text("Duration").foregroundStyle(.secondary)
-                        Spacer()
-                        Text(MediaTime.format(max(0, endSeconds - startSeconds))).font(H3.mono(size: 11))
-                    }.font(H3.body(size: 11)).padding(.top, 2)
-                }.disabled(busy || duration <= 0)
-                Divider()
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Output").font(H3.body(size: 12, weight: .semibold))
-                        Spacer(minLength: 8)
-                        Picker("Output", selection: $asAudio) { Text("Video").tag(false); Text("Audio").tag(true) }
-                            .labelsHidden().pickerStyle(.segmented)
+                }
+                if !asAudio {
+                    GridRow {
+                        Text("Quality").foregroundStyle(.secondary)
+                        Picker("Quality", selection: $videoQuality) { ForEach(VideoQuality.allCases) { Text($0.label).tag($0) } }
+                            .labelsHidden().disabled(accuracy == .fast)
                     }
-                    HStack(alignment: .top, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Format").font(H3.body(size: 11)).foregroundStyle(.secondary)
-                            if asAudio {
-                                Picker("Format", selection: $audioFormat) { ForEach(AudioFormat.allCases) { Text($0.label).tag($0) } }
-                                    .labelsHidden()
-                            } else {
-                                Picker("Format", selection: $videoContainer) { ForEach(VideoContainer.allCases) { Text($0.label).tag($0) } }
-                                    .labelsHidden()
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                        if !asAudio {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Quality").font(H3.body(size: 11)).foregroundStyle(.secondary)
-                                Picker("Quality", selection: $videoQuality) { ForEach(VideoQuality.allCases) { Text($0.label).tag($0) } }
-                                    .labelsHidden().disabled(accuracy == .fast)
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    Picker("Cut method", selection: $accuracy) {
-                        Text("Accurate").tag(ClipAccuracy.accurate); Text("Fast").tag(ClipAccuracy.fast)
-                    }.labelsHidden().pickerStyle(.segmented)
-                    Text(accuracy == .accurate ? "Precise boundaries. Re-encodes the clip." : "Copies at nearby keyframes. Boundaries may shift; quality settings do not apply.")
-                        .font(H3.body(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }.disabled(busy)
-            }.padding(12)
-        }.scrollIndicators(.hidden)
-            .background(H3.cardFill, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(H3.cardStroke, lineWidth: 0.5))
+                }
+            }.font(H3.body(size: 12))
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Cut method").font(H3.body(size: 11)).foregroundStyle(.secondary)
+                Picker("Cut method", selection: $accuracy) {
+                    Text("Accurate").tag(ClipAccuracy.accurate); Text("Fast").tag(ClipAccuracy.fast)
+                }.labelsHidden().pickerStyle(.segmented)
+                Text(accuracy == .accurate ? "Precise boundaries. Re-encodes the clip." : "Copies at nearby keyframes. Boundaries may shift; quality settings do not apply.")
+                    .font(H3.body(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }.padding(20).frame(width: 300).disabled(busy).modifier(TrimPopoverEntrance())
     }
     private func boundaryField(isStart: Bool) -> some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             TimeField(label: isStart ? "Start" : "End",
                       seconds: Binding(get: { isStart ? startSeconds : endSeconds }, set: {
                 if isStart { setRange(start: $0, end: endSeconds) } else { setRange(start: startSeconds, end: $0) }
             }), min: isStart ? 0 : startSeconds + min(0.25, duration),
                       max: isStart ? max(0, endSeconds - min(0.25, duration)) : duration,
-                      invalid: isStart ? $startInputInvalid : $endInputInvalid)
-            Spacer(minLength: 0)
+                      invalid: isStart ? $startInputInvalid : $endInputInvalid).frame(width: 164, alignment: .leading)
             Button {
                 if isStart { startBinding.wrappedValue = currentTime } else { endBinding.wrappedValue = currentTime }
             } label: { Image(systemName: isStart ? "i.square" : "o.square") }
@@ -237,13 +232,21 @@ struct CutWindowHost: View {
     }
     private var preview: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 10).fill(Color.black)
-            if let player { TrimPlaybackSurface(player: player) }
+            RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: NSColor(white: 0.04, alpha: 1)))
+            if let player, !audioOnly { TrimPlaybackSurface(player: player) }
+            else if audioOnly {
+                VStack(spacing: 12) {
+                    Image(systemName: "waveform").font(.system(size: 36, weight: .light))
+                    Text(title).font(H3.body(size: 14, weight: .medium)).lineLimit(2)
+                    Text("Audio preview").font(H3.body(size: 11)).foregroundStyle(.white.opacity(0.5))
+                }.foregroundStyle(.white.opacity(0.85)).padding(24)
+            }
             else if let thumbnailURL { AsyncImage(url: thumbnailURL) { $0.resizable().scaledToFit() } placeholder: { ProgressView() } }
             else {
                 VStack(spacing: 12) {
                     Image(systemName: asAudio ? "waveform" : "play.rectangle").font(.system(size: 30, weight: .light))
-                    Text(loading ? "Loading preview…" : "Drop media here").font(H3.body(size: 13, weight: .medium))
+                    Text(loading ? "Loading preview…" : "Drop a video or audio file").font(H3.body(size: 14, weight: .medium))
+                    if !loading { Text("Or open a file or paste a link above").font(H3.body(size: 11)) }
                 }.foregroundStyle(.white.opacity(0.5))
             }
             if loading { ProgressView().tint(.white) }
@@ -251,23 +254,27 @@ struct CutWindowHost: View {
                 Text(previewError).font(H3.body(size: 12)).foregroundStyle(.white)
                     .padding(10).background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 8)).frame(maxHeight: .infinity, alignment: .bottom).padding(10)
             }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity).clipShape(RoundedRectangle(cornerRadius: 10))
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
     }
     private var transport: some View {
-        HStack(spacing: 4) {
-            Text(MediaTime.format(currentTime)).font(H3.mono(size: 11)).foregroundStyle(.secondary)
-                .frame(width: 102, alignment: .leading)
-            Spacer(minLength: 4)
-            Button { seek(startSeconds, precise: true) } label: { Image(systemName: "backward.end.fill") }.help("Jump to clip start")
-            Button(action: togglePlayback) { Image(systemName: isPlaying ? "pause.fill" : "play.fill").frame(width: 14) }
-                .help("Play / pause (Space)").accessibilityLabel(isPlaying ? "Pause" : "Play")
-            Button { seek(endSeconds, precise: true) } label: { Image(systemName: "forward.end.fill") }.help("Jump to clip end")
-            Spacer(minLength: 4)
-            Button { loopSelection.toggle() } label: {
-                Image(systemName: "repeat").foregroundStyle(loopSelection ? H3.ink900 : H3.ink300)
-            }.help("Loop clip").accessibilityLabel("Loop clip").accessibilityValue(loopSelection ? "On" : "Off")
-            Button { muted.toggle(); player?.isMuted = muted } label: { Image(systemName: muted ? "speaker.slash" : "speaker.wave.2") }
-                .help("Mute preview").accessibilityLabel(muted ? "Unmute" : "Mute")
+        ZStack {
+            HStack(spacing: 8) {
+                Text(MediaTime.format(currentTime)).font(H3.mono(size: 11)).foregroundStyle(.secondary)
+                Spacer()
+                Button { loopSelection.toggle() } label: {
+                    Image(systemName: "repeat").foregroundStyle(loopSelection ? H3.ink900 : H3.ink300)
+                }.help("Loop clip").accessibilityLabel("Loop clip").accessibilityValue(loopSelection ? "On" : "Off")
+                Button { muted.toggle(); player?.isMuted = muted } label: { Image(systemName: muted ? "speaker.slash" : "speaker.wave.2") }
+                    .help("Mute preview").accessibilityLabel(muted ? "Unmute" : "Mute")
+            }
+            HStack(spacing: 8) {
+                Button { seek(startSeconds, precise: true) } label: { Image(systemName: "backward.end.fill") }
+                    .help("Jump to clip start").accessibilityLabel("Jump to clip start")
+                Button(action: togglePlayback) { Image(systemName: isPlaying ? "pause.fill" : "play.fill").font(.system(size: 15, weight: .medium)).frame(width: 22, height: 22) }
+                    .help("Play / pause (Space)").accessibilityLabel(isPlaying ? "Pause" : "Play")
+                Button { seek(endSeconds, precise: true) } label: { Image(systemName: "forward.end.fill") }
+                    .help("Jump to clip end").accessibilityLabel("Jump to clip end")
+            }
         }.buttonStyle(TrimControlStyle()).disabled(player == nil || busy)
     }
     @ViewBuilder private var footer: some View {
@@ -276,7 +283,7 @@ struct CutWindowHost: View {
                 if job.isActive {
                     ProgressView().controlSize(.small)
                     Text(job.statusLine).font(H3.body(size: 12)).lineLimit(1)
-                    Button("Cancel export", systemImage: "xmark.circle") { downloads.cancel(job) }
+                    Button("Cancel export", systemImage: "xmark.circle") { downloads.cancel(job) }.fixedSize()
                 } else if case .finished(let file?) = job.status {
                     Label("Clip saved", systemImage: "checkmark.circle.fill").foregroundStyle(H3.green)
                     MediaFileActions(file: file, mode: job.mode)
@@ -286,6 +293,12 @@ struct CutWindowHost: View {
                 } else { Text("Export cancelled").foregroundStyle(H3.ink500) }
             } else { Text("Save as a separate clip").font(H3.body(size: 11)).foregroundStyle(.secondary) }
             Spacer()
+            Text(exportSummary).font(H3.body(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            Button("Export settings", systemImage: "slider.horizontal.3") {
+                withAnimation(reduceMotion ? nil : H3.appleSnap) { showExportSettings.toggle() }
+            }
+                .buttonStyle(TrimControlStyle()).fixedSize().disabled(busy)
+                .popover(isPresented: $showExportSettings, arrowEdge: .top) { exportSettings }
             Button("Export clip", systemImage: "arrow.down.to.line", action: export)
                 .buttonStyle(.borderedProminent).controlSize(.large).fixedSize()
                 .disabled(!selectionIsValid || busy || loading)
@@ -337,6 +350,7 @@ struct CutWindowHost: View {
         }
     }
     private func handleKey(_ key: String, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard !busy, !showExportSettings else { return false }
         if modifiers.contains(.command), key.lowercased() == "z" { undoRange(redo: modifiers.contains(.shift)); return true }
         guard !modifiers.contains(.command), !busy, duration > 0 else { return false }
         if timelineControlFocused && (key == "left" || key == "right") { return false }
@@ -383,6 +397,7 @@ struct CutWindowHost: View {
         teardownPlayer()
         let asset = AVURLAsset(url: file)
         let tracks = try? await asset.loadTracks(withMediaType: .video)
+        audioOnly = tracks?.isEmpty == true
         if let track = tracks?.first, let fps = try? await track.load(.nominalFrameRate), fps > 0 { frameStep = 1 / Double(fps) }
         guard !Task.isCancelled else { return }
         let player = AVPlayer(playerItem: AVPlayerItem(asset: asset)); player.isMuted = muted
@@ -428,8 +443,9 @@ struct CutWindowHost: View {
         loadID = UUID(); let generation = loadID
         loading = true; defer { if loadID == generation { loading = false } }
         loadError = nil; previewError = nil; cookieWarning = nil; previewURL = nil; thumbnailURL = nil
+        audioOnly = false; currentTime = 0; uploader = ""; historyTask?.cancel()
         duration = 0; startSeconds = 0; endSeconds = 0; frameStep = 0.1; zoom = 1; timelineCenter = nil
-        rangeHistory = []; redoHistory = []; job = nil; startInputInvalid = false; endInputInvalid = false
+        rangeHistory = []; redoHistory = []; job = nil; startInputInvalid = false; endInputInvalid = false; durationInputInvalid = false
         switch source {
         case .local(let file):
             title = file.deletingPathExtension().lastPathComponent; link = ""
@@ -480,11 +496,21 @@ struct CutWindowHost: View {
     }
     private func export() {
         guard selectionIsValid, !busy else { return }
+        showExportSettings = false
         playbackRequested = false; player?.pause(); isPlaying = false
         job = downloads.enqueue(url: source.value, mode: asAudio ? .audio : .cut,
                                 cutStart: startSeconds, cutEnd: endSeconds,
                                 overrides: DownloadOverrides(videoQuality: videoQuality, videoContainer: videoContainer, audioFormat: audioFormat),
                                 source: source, clipAccuracy: accuracy)
+    }
+}
+
+private struct TrimPopoverEntrance: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visible = false
+    func body(content: Content) -> some View {
+        content.opacity(visible ? 1 : 0)
+            .onAppear { withAnimation(reduceMotion ? nil : H3.easeOut) { visible = true } }
     }
 }
 
@@ -544,7 +570,7 @@ struct TimeField: View {
         }
     }
     private var fieldLabel: some View {
-        Text(label).font(H3.body(size: 11)).foregroundStyle(.secondary).frame(width: 32, alignment: .leading)
+        Text(label).font(H3.body(size: 11)).foregroundStyle(.secondary).frame(width: label == "Duration" ? 50 : 32, alignment: .leading)
     }
     private var entry: some View {
         TextField("00:00:00.000", text: $text).textFieldStyle(.roundedBorder)
